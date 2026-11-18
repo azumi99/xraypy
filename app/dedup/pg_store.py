@@ -6,7 +6,6 @@ import logging
 
 import asyncpg
 import numpy as np
-from pgvector.asyncpg import register_vector
 
 from ..config import Settings
 from ..warehouse import warehouse_sql
@@ -47,8 +46,6 @@ class PgVectorStore(IdentityStore):
         from ..db import create_pool  # local import avoids circular at module load
 
         self._pool = await create_pool(self._settings)
-        async with self._pool.acquire() as conn:
-            await register_vector(conn)
         logger.info("pgvector store ready (schema cv)")
 
     async def close(self) -> None:
@@ -59,7 +56,6 @@ class PgVectorStore(IdentityStore):
     async def _run(self, query: str, *args):
         assert self._pool is not None
         async with self._pool.acquire() as conn:
-            await register_vector(conn)
             return await conn.fetch(warehouse_sql(query), *args)
 
     async def _runrow(self, query: str, *args):
@@ -139,6 +135,15 @@ class PgVectorStore(IdentityStore):
     async def get(self, identity_id: int) -> IdentityRecord | None:
         row = await self._runrow(f"{self._SELECT} WHERE i.id=$1", identity_id)
         return self._map(row) if row else None
+
+    async def get_many_metadata(self, identity_ids: list[int]) -> dict[int, IdentityRecord]:
+        if not identity_ids:
+            return {}
+        rows = await self._run(
+            "SELECT id, batch_id, track_id, status, idx, sim_score, crop_ref, crop_ref_side, created_at "
+            "FROM cv.parcel_identity WHERE id = ANY($1::bigint[])", identity_ids,
+        )
+        return {row["id"]: IdentityRecord(**dict(row)) for row in rows}
 
     async def find_similar(
         self,
@@ -281,7 +286,6 @@ class PgVectorStore(IdentityStore):
     ) -> tuple[IdentityRecord, AwbRecord | None]:
         assert self._pool is not None
         async with self._pool.acquire() as conn:
-            await register_vector(conn)
             conn = _WarehouseConnection(conn)
             async with conn.transaction():
                 # per-batch advisory lock: serialized idx + AWB pairing
@@ -357,7 +361,6 @@ class PgVectorStore(IdentityStore):
     ) -> tuple[IdentityRecord, AwbRecord | None]:
         assert self._pool is not None
         async with self._pool.acquire() as conn:
-            await register_vector(conn)
             conn = _WarehouseConnection(conn)
             async with conn.transaction():
                 rec_row = await conn.fetchrow(

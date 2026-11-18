@@ -91,6 +91,10 @@ class IdentityStore(ABC):
     async def get(self, identity_id: int) -> IdentityRecord | None: ...
 
     @abstractmethod
+    async def get_many_metadata(self, identity_ids: list[int]) -> dict[int, IdentityRecord]:
+        """Fetch parcel display metadata in the current warehouse."""
+
+    @abstractmethod
     async def find_similar(
         self,
         embedding: np.ndarray,

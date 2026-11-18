@@ -88,23 +88,32 @@ class QrCheckBody(BaseModel):
 
 async def _dump_detail(request: Request, a) -> dict[str, Any]:
     """AWB record + paired parcel details (idx, status, crop for the photo)."""
+    rec = await request.app.state.store.get(a.parcel_id) if a.parcel_id else None
+    return _dump_with_parcel(a, rec)
+
+
+def _dump_with_parcel(a, rec) -> dict[str, Any]:
     d = _dump(a)
-    if a.parcel_id:
-        rec = await request.app.state.store.get(a.parcel_id)
-        if rec is not None:
-            created = rec.created_at.isoformat() if rec.created_at else None
-            d["parcel"] = {
-                "id": rec.id,
-                "idx": rec.idx,
-                "status": rec.status,
-                "batch_id": rec.batch_id,
-                "track_id": rec.track_id,
-                "crop_ref": rec.crop_ref,
-                "crop_ref_side": rec.crop_ref_side,
-                "sim_score": rec.sim_score,
-                "created_at": created,
-            }
+    if rec is not None:
+        created = rec.created_at.isoformat() if rec.created_at else None
+        d["parcel"] = {
+            "id": rec.id,
+            "idx": rec.idx,
+            "status": rec.status,
+            "batch_id": rec.batch_id,
+            "track_id": rec.track_id,
+            "crop_ref": rec.crop_ref,
+            "crop_ref_side": rec.crop_ref_side,
+            "sim_score": rec.sim_score,
+            "created_at": created,
+        }
     return d
+
+
+async def _dump_list(request: Request, items) -> dict[str, Any]:
+    ids = list({a.parcel_id for a in items if a.parcel_id})
+    parcels = await request.app.state.store.get_many_metadata(ids) if ids else {}
+    return {"items": [_dump_with_parcel(a, parcels.get(a.parcel_id)) for a in items]}
 
 
 async def _resolve_qr(body: AwbBody, request: Request):
@@ -193,7 +202,7 @@ async def insert_awb(body: AwbBody, request: Request, _: None = Depends(require_
 async def list_waiting(request: Request, _: None = Depends(require_operator)) -> dict[str, Any]:
     service = request.app.state.awb
     items = await service.waiting()
-    return {"items": [await _dump_detail(request, a) for a in items]}
+    return await _dump_list(request, items)
 
 
 @router.get("/{awb_id}")
@@ -294,7 +303,7 @@ async def list_all(
 ) -> dict[str, Any]:  # type: ignore[assignment]
     service = request.app.state.awb
     items = await service.all(status)
-    return {"items": [await _dump_detail(request, a) for a in items]}
+    return await _dump_list(request, items)
 
 
 @router.delete("/{awb_id}")

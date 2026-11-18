@@ -7,6 +7,7 @@ from contextvars import ContextVar
 from pathlib import Path
 
 import asyncpg
+from pgvector.asyncpg import register_vector
 
 from .config import Settings
 
@@ -64,6 +65,11 @@ def _active_dim(settings: Settings) -> int:
 async def create_pool(settings: Settings) -> asyncpg.Pool:
     dsn = resolve_dsn(settings)
     entry = tunnel_entry.get()
+    vector_ready = False
+
+    async def init_connection(connection):
+        if vector_ready:
+            await register_vector(connection)
 
     async def connect(*args, **kwargs):
         process = entry["process"]
@@ -77,6 +83,7 @@ async def create_pool(settings: Settings) -> asyncpg.Pool:
 
     try:
         options = {"connect": connect} if entry is not None else {}
+        options["init"] = init_connection
         pool = await asyncpg.create_pool(dsn, min_size=1, max_size=5, **options)
     except OSError as exc:  # connection refused etc.
         raise DatabaseUnavailableError(
@@ -93,6 +100,10 @@ async def create_pool(settings: Settings) -> asyncpg.Pool:
                     "Install it (`brew install pgvector`) and restart Postgres."
                 )
         await apply_migrations(pool, settings)
+        vector_ready = True
+        # Bootstrap connections were opened before CREATE EXTENSION; replace
+        # them so every physical connection receives the codec once on creation.
+        await pool.expire_connections()
     except asyncpg.PostgresError as exc:  # pragma: no cover - defensive
         await pool.close()
         raise DatabaseUnavailableError(f"Database error during startup: {exc}") from exc

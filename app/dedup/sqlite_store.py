@@ -345,6 +345,26 @@ class SqliteStore(IdentityStore):
     async def get(self, identity_id: int) -> IdentityRecord | None:
         return await asyncio.to_thread(self._get, identity_id)
 
+    async def get_many_metadata(self, identity_ids: list[int]) -> dict[int, IdentityRecord]:
+        if not identity_ids:
+            return {}
+
+        def run():
+            with self._lock:
+                rows = self._connect().execute(
+                    "SELECT id, batch_id, track_id, status, idx, sim_score, crop_ref, crop_ref_side, created_at "
+                    "FROM parcel_identity WHERE id IN (SELECT value FROM json_each(?))",
+                    (json.dumps(identity_ids),),
+                ).fetchall()
+            return {row["id"]: IdentityRecord(
+                id=row["id"], batch_id=row["batch_id"], track_id=row["track_id"],
+                status=row["status"], idx=row["idx"], sim_score=row["sim_score"],
+                crop_ref=row["crop_ref"], crop_ref_side=row["crop_ref_side"],
+                created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else None,
+            ) for row in rows}
+
+        return await asyncio.to_thread(run)
+
     def _get(self, identity_id: int) -> IdentityRecord | None:
         with self._lock:
             conn = self._connect()

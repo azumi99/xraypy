@@ -4,6 +4,7 @@ import { TrashIcon } from "../icons";
 import { groupAwbs } from "../awbGroups";
 import { useAwbDisplayStore } from "../store/awbDisplay";
 import { shouldRefreshAwbs } from "../awbEvents";
+import { groupManifestRequests } from "../manifestRequests";
 
 const PAGE_SIZES = [10, 25, 50];
 const EMPTY_FILTERS = { mawb: "", hawb: "", airlines: "", flight: "" };
@@ -24,6 +25,7 @@ export default function AwbTab({ onChanged, onOpenDetail, onEvent, connected }) 
   const [loadAllManifests, setLoadAllManifests] = useState(false);
 
   const requestVersion = useRef(0);
+  const refreshTimer = useRef(null);
   const load = useCallback(async () => {
     const version = ++requestVersion.current;
     try {
@@ -35,13 +37,17 @@ export default function AwbTab({ onChanged, onOpenDetail, onEvent, connected }) 
       setAttempt((n) => n + 1);
     } catch { if (version === requestVersion.current) setError("Daftar AWB tidak dapat dimuat. Data yang ditampilkan mungkin tidak terbaru."); }
   }, []);
+  const scheduleLoad = useCallback(() => {
+    clearTimeout(refreshTimer.current);
+    refreshTimer.current = setTimeout(load, 100);
+  }, [load]);
 
   useEffect(() => {
-    load();
-    const unsubscribe = onEvent((event) => { if (shouldRefreshAwbs(event)) load(); });
-    return () => { requestVersion.current += 1; unsubscribe(); };
-  }, [load, onEvent]);
-  useEffect(() => { if (connected) load(); }, [connected, load]);
+    scheduleLoad();
+    const unsubscribe = onEvent((event) => { if (shouldRefreshAwbs(event)) scheduleLoad(); });
+    return () => { clearTimeout(refreshTimer.current); requestVersion.current += 1; unsubscribe(); };
+  }, [scheduleLoad, onEvent]);
+  useEffect(() => { if (connected) scheduleLoad(); }, [connected, scheduleLoad]);
 
   const remove = async (id) => {
     try {
@@ -75,23 +81,24 @@ export default function AwbTab({ onChanged, onOpenDetail, onEvent, connected }) 
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const safePage = Math.min(page, totalPages);
   const pageItems = filtered.slice((safePage - 1) * pageSize, safePage * pageSize);
-  const pageKey = JSON.stringify((grouped || manifestFilter || loadAllManifests ? items : pageItems).map((a) => a.id));
+  const pageKey = JSON.stringify(groupManifestRequests(grouped || manifestFilter || loadAllManifests ? items : pageItems));
   useEffect(() => {
     let active = true;
     const queue = JSON.parse(pageKey);
     setManifests({});
     const worker = async () => {
       while (queue.length && active) {
-        const id = queue.shift();
+        const ids = queue.shift();
         try {
-          const result = await api(`/awb/${id}/manifest`);
-          if (active) setManifests((previous) => ({ ...previous, [id]: result }));
+          const result = await api(`/awb/${ids[0]}/manifest`);
+          if (active) setManifests((previous) => ({ ...previous, ...Object.fromEntries(ids.map((id) => [id, result])) }));
         } catch {
-          if (active) setManifests((previous) => ({ ...previous, [id]: { status: "unavailable" } }));
+          if (active) setManifests((previous) => ({ ...previous, ...Object.fromEntries(ids.map((id) => [id, { status: "unavailable" }])) }));
         }
       }
     };
-    for (let i = 0; i < Math.min(3, queue.length); i++) void worker();
+    const concurrency = Math.min(3, queue.length);
+    for (let i = 0; i < concurrency; i++) void worker();
     return () => { active = false; };
   }, [pageKey, attempt]);
   const firstEntry = filtered.length === 0 ? 0 : (safePage - 1) * pageSize + 1;

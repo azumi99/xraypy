@@ -215,7 +215,6 @@ async def test_postgres_insert_list_and_label_sql(settings, monkeypatch, site):
     async def acquire():
         yield conn
 
-    monkeypatch.setattr("app.dedup.pg_store.register_vector", AsyncMock())
     store = PgVectorStore(settings)
     store._pool = SimpleNamespace(acquire=acquire)
     token = warehouse_context.set(site)
@@ -251,7 +250,6 @@ async def test_postgres_qr_timestamp_insert(settings, monkeypatch, site):
     async def acquire():
         yield conn
 
-    monkeypatch.setattr("app.dedup.pg_store.register_vector", AsyncMock())
     store = PgVectorStore(settings)
     store._pool = SimpleNamespace(acquire=acquire)
     token = warehouse_context.set(site)
@@ -263,3 +261,80 @@ async def test_postgres_qr_timestamp_insert(settings, monkeypatch, site):
     assert f"INSERT INTO cv.awb_{site}" in query
     assert "CASE WHEN $6::boolean THEN now() ELSE NULL END" in query
     assert args[-1] is True and result.timecreated == timestamp
+
+
+@pytest.mark.parametrize("site", ["bgd", "cas"])
+async def test_awb_lists_batch_metadata_and_preserve_output(store, settings, site):
+    from app.awb.router import _dump_detail
+
+    conn = store._conn
+    other = "cas" if site == "bgd" else "bgd"
+    timestamp = "2024-01-02T03:04:05+00:00"
+    conn.executemany(
+        f"INSERT INTO parcel_identity_{site} (id,batch_id,track_id,status,idx,sim_score,model_name,model_version,crop_ref,crop_ref_side,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        [(i, site, i, "NEW", i, .75, "m", "v", "front", "side", timestamp) for i in range(1, 1101)],
+    )
+    conn.execute(f"INSERT INTO parcel_identity_{other} (id,batch_id,track_id,status,model_name,model_version,created_at) VALUES (9000,'secret',1,'NEW','m','v',?)", (timestamp,))
+    conn.executemany(
+        f"INSERT INTO awb_{site} (id,awb_number,hawb_number,part,total,label_photo_ref,timecreated,batch_id,status,parcel_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        [(i, f"AWB-{i}", "HOUSE", 1, 2, "label.jpg", timestamp, site,
+          "WAITING" if i % 2 else "PAIRED", i, timestamp) for i in range(1, 1101)]
+        + [(1101, "ORPHAN", None, None, None, None, None, site, "WAITING", 9000, timestamp),
+           (1102, "EMPTY", None, None, None, None, None, site, "WAITING", None, timestamp)],
+    )
+    conn.commit()
+    app = FastAPI()
+    app.include_router(router, prefix="/api")
+    app.dependency_overrides[require_operator] = lambda: None
+    app.state.store = store
+    app.state.awb = AwbService(settings, store)
+    request = SimpleNamespace(app=app)
+    token = warehouse_context.set(site)
+    try:
+        items = await store.list_awbs()
+        expected = [await _dump_detail(request, item) for item in items]
+        statements = []
+        conn.set_trace_callback(statements.append)
+        try:
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://test") as client:
+                for path, wanted in (("/api/awb", expected), ("/api/awb/waiting", [x for x in expected if x["status"] == "WAITING"]), ("/api/awb?status=PAIRED", [x for x in expected if x["status"] == "PAIRED"])):
+                    statements.clear()
+                    response = await client.get(path)
+                    assert response.status_code == 200
+                    assert response.json()["items"] == wanted
+                    selects = [s for s in statements if s.lstrip().upper().startswith("SELECT")]
+                    assert len(selects) == 2
+                    assert f"FROM parcel_identity_{site}" in selects[1]
+                    assert "embedding" not in selects[1].lower()
+                assert "parcel" not in expected[-2] and "parcel" not in expected[-1]
+        finally:
+            conn.set_trace_callback(None)
+    finally:
+        warehouse_context.reset(token)
+
+
+@pytest.mark.parametrize("site", ["bgd", "cas"])
+async def test_postgres_batch_metadata_query(settings, monkeypatch, site):
+    timestamp = datetime.now(UTC)
+    row = dict(id=1, batch_id=site, track_id=3, status="NEW", idx=4, sim_score=.5,
+               crop_ref="front", crop_ref_side="side", created_at=timestamp)
+    conn = SimpleNamespace(fetch=AsyncMock(return_value=[row]))
+
+    @asynccontextmanager
+    async def acquire():
+        yield conn
+
+    store = PgVectorStore(settings)
+    store._pool = SimpleNamespace(acquire=acquire)
+    token = warehouse_context.set(site)
+    try:
+        assert await store.get_many_metadata([]) == {}
+        result = await store.get_many_metadata(list(range(1, 1101)))
+    finally:
+        warehouse_context.reset(token)
+    conn.fetch.assert_awaited_once()
+    query, ids = conn.fetch.call_args.args
+    assert f"FROM cv.parcel_identity_{site}" in query
+    assert "ANY($1::bigint[])" in query and "embedding" not in query.lower() and "*" not in query
+    assert len(ids) == 1100 and result[1].created_at == timestamp
+    assert 9000 not in result
