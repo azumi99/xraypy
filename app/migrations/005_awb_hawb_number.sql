@@ -1,0 +1,1 @@
+ALTER TABLE cv.awb ADD COLUMN IF NOT EXISTS hawb_number TEXT;

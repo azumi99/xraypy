@@ -1,0 +1,232 @@
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
+import api from "./api";
+import { useStream } from "./hooks/useStream";
+import LiveTab from "./components/LiveTab";
+import AwbTab from "./components/AwbTab";
+import { BoxIcon, PrinterIcon, TagIcon, VideoIcon } from "./icons";
+import AwbDetailPage from "./components/AwbDetailPage";
+import LabelsTab from "./components/LabelsTab";
+import { warehousePath } from "./routes";
+const Dashboard = lazy(() => import("./components/Dashboard"));
+
+const TABS = [
+  { path: "/dashboard", label: "Dashboard", icon: <BoxIcon /> },
+  { path: "/live", label: "Xray", icon: <VideoIcon /> },
+  { path: "/awb", label: "Queue AWB", icon: <TagIcon /> },
+  { path: "/labels", label: "Print Label", icon: <PrinterIcon /> },
+];
+
+const PAGE_TITLES = { "/dashboard": "Dashboard", "/live": "Xray", "/awb": "Queue AWB", "/labels": "Print Label" };
+
+/** Router ringan berbasis History API — URL ikut berubah ke /namahalaman. */
+export function usePathRoute() {
+  const [path, setPath] = useState(window.location.pathname);
+  useEffect(() => {
+    const onPop = () => setPath(window.location.pathname);
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+  const navigate = (to) => {
+    if (to === window.location.pathname) return;
+    window.history.pushState({}, "", to);
+    setPath(to);
+  };
+  return [path, navigate];
+}
+
+export default function App() {
+  const [auth, setAuth] = useState(null);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [pending, setPending] = useState(false);
+  const [retry, setRetry] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    setError("");
+    fetch("/api/auth/session", { credentials: "same-origin", cache: "no-store" })
+      .then(async (response) => {
+        if (response.status === 401) return null;
+        if (!response.ok) throw new Error();
+        const session = await response.json();
+        if (session.authenticated === false) return null;
+        const user = session.user ?? session;
+        if (!["cas", "bgd"].includes(user?.access)) throw new Error();
+        return user;
+      })
+      .then((user) => { if (!cancelled) setAuth(user || false); })
+      .catch(() => { if (!cancelled) setError("Tidak dapat memuat sesi. Coba lagi."); });
+    return () => { cancelled = true; };
+  }, [retry]);
+
+  async function login(event) {
+    event.preventDefault();
+    setError("");
+    setPending(true);
+    try {
+      const response = await fetch("/api/auth/login", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email, password }) });
+      if (!response.ok) throw new Error();
+      setPassword("");
+      setAuth(null);
+      setRetry((value) => value + 1);
+    } catch { setError("Login gagal. Periksa email dan password Anda."); }
+    finally { setPending(false); }
+  }
+
+  async function logout() {
+    setError("");
+    setPending(true);
+    try {
+      const response = await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" });
+      if (!response.ok) throw new Error();
+      setAuth(false);
+    } catch { setError("Logout gagal. Coba lagi."); }
+    finally { setPending(false); }
+  }
+
+  if (auth === null) return <div className="min-h-screen grid place-items-center p-4">{error ? <div role="alert">{error} <button className="btn-ghost" onClick={() => setRetry((value) => value + 1)}>Coba lagi</button></div> : <span role="status">Memuat...</span>}</div>;
+  if (!auth) return (
+    <main className="min-h-screen grid place-items-center p-4">
+      <form onSubmit={login} className="panel w-full max-w-sm flex flex-col gap-4">
+        <div><div className="text-muted text-xs font-bold uppercase tracking-wider">Xray Cargo</div><h1 className="text-2xl font-extrabold mt-2">Login operator</h1></div>
+        <label htmlFor="email" className="text-sm font-bold">Email</label>
+        <input id="email" type="email" autoComplete="username" required value={email} onChange={(e) => setEmail(e.target.value)} className="w-full rounded-xl border-2 border-[var(--border)] bg-[var(--bg-cream)] px-3 py-3 text-[var(--text)] focus:outline-2 focus:outline-[var(--cta)]" />
+        <label htmlFor="password" className="text-sm font-bold">Password</label>
+        <input id="password" type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} className="w-full rounded-xl border-2 border-[var(--border)] bg-[var(--bg-cream)] px-3 py-3 text-[var(--text)] focus:outline-2 focus:outline-[var(--cta)]" />
+        {error && <p role="alert" className="text-sm text-red-400">{error}</p>}
+        <button className="btn-clay" type="submit" disabled={pending}>{pending ? "Memuat..." : "Masuk"}</button>
+      </form>
+    </main>
+  );
+  return <AuthenticatedApp user={auth} onLogout={logout} logoutError={error} logoutPending={pending} />;
+}
+
+function AuthenticatedApp({ user, onLogout, logoutError, logoutPending }) {
+  const [currentPath, navigateRoute] = usePathRoute();
+  const canonicalPath = warehousePath(currentPath, user.access);
+  const path = canonicalPath.slice(user.access.length + 1);
+  const navigate = (to) => navigateRoute(`/${user.access}${to}`);
+  useEffect(() => {
+    if (canonicalPath !== currentPath) {
+      window.history.replaceState({}, "", canonicalPath + window.location.search + window.location.hash);
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    }
+  }, [canonicalPath, currentPath]);
+  const tab = path.replace(/^\/+/, "").split("/")[0] || "live";
+  const activePath = `/${tab}` in PAGE_TITLES ? `/${tab}` : "/live";
+  const awbDetailMatch = path.match(/^\/awb\/(\d+)$/);
+  const awbDetailId = awbDetailMatch ? Number(awbDetailMatch[1]) : null;
+  const [session, setSession] = useState(null);
+  const [theme, setTheme] = useState(() => {
+    try { return localStorage.getItem("xray-theme") === "light" ? "light" : "dark"; }
+    catch { return "dark"; }
+  });
+  const { frames, connected, onEvent } = useStream();
+
+  const refreshSession = useCallback(async () => {
+    setSession(await api("/session/state").catch(() => null));
+  }, []);
+
+  useEffect(() => { refreshSession(); }, [refreshSession]);
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    try { localStorage.setItem("xray-theme", theme); } catch { /* storage may be unavailable */ }
+  }, [theme]);
+
+  // Refresh session state on parcel activity.
+  useEffect(
+    () =>
+      onEvent((m) => {
+        if (m.type?.startsWith("parcel.") || m.type?.startsWith("session.")) {
+          refreshSession();
+        }
+      }),
+    [onEvent, refreshSession],
+  );
+
+  return (
+    <div className="min-h-screen md:flex">
+      <aside className="bg-[var(--bg)] border-b-2 md:border-b-0 md:border-r-2 border-[var(--border)] px-4 py-4 flex flex-col gap-4 md:gap-6 md:w-60 md:h-screen md:sticky md:top-0 md:shrink-0">
+        <div className="flex gap-3 items-center px-1.5">
+          <span className="grid place-items-center w-10 h-10 rounded-xl bg-[var(--secondary)] border-3 border-[var(--text)] shadow-[4px_4px_0_var(--text)] shrink-0 text-[var(--text)]">
+            <BoxIcon />
+          </span>
+          <div>
+            <b className="block text-[16px] font-extrabold tracking-tight">Xray Cargo</b>
+          </div>
+        </div>
+        <nav aria-label="Navigasi utama" className="flex flex-wrap md:flex-col gap-1.5">
+          {TABS.map((t) => (
+            <button
+              key={t.path}
+              className={`side-nav-item !w-auto md:!w-full ${activePath === t.path ? "active" : ""}`}
+              aria-current={activePath === t.path ? "page" : undefined}
+              onClick={() => navigate(t.path)}
+            >
+              {t.icon}
+              <span className="lbl">{t.label}</span>
+            </button>
+          ))}
+        </nav>
+        <div className="sidebar-footer md:mt-auto">
+          <div className="sidebar-account">
+            <div className="sidebar-account-heading"><span>AKUN OPERATOR</span><span className="sidebar-warehouse">{user.access.toUpperCase()}</span></div>
+            <span className="sidebar-email">{user.email}</span>
+            <button type="button" className="sidebar-logout" onClick={onLogout} disabled={logoutPending}>{logoutPending ? "Memuat..." : "Logout"}</button>
+            {logoutError && <p role="alert" className="text-sm text-red-400">{logoutError}</p>}
+          </div>
+          <div className="sidebar-status">
+            <div className="sidebar-status-row"><span>Koneksi</span><strong className={connected ? "sidebar-connected" : ""}><span className="sidebar-status-dot" />{connected ? "Terhubung" : "Terputus"}</strong></div>
+            <div className="sidebar-status-row"><span>Sesi</span><strong>{session?.running ? "Aktif" : "Tidak aktif"}</strong></div>
+            <div className="sidebar-session-info">{session?.batch_id ?? "Belum ada sesi"} · {session?.parcel_count ?? 0} paket</div>
+          </div>
+          <button
+            type="button"
+            className="theme-switch"
+            role="switch"
+            aria-checked={theme === "dark"}
+            aria-label="Mode gelap"
+            onClick={() => setTheme((current) => current === "dark" ? "light" : "dark")}
+          >
+            <span aria-hidden="true" className="theme-switch-track"><span className="theme-switch-thumb" /></span>
+            {theme === "dark" ? "Dark" : "Light"}
+          </button>
+        </div>
+      </aside>
+
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center justify-between px-4 sm:px-7 pt-6">
+          <div>
+            {awbDetailId ? (
+              <button className="btn-ghost" onClick={() => navigate("/awb")}>← Kembali</button>
+            ) : (
+              <>
+                <div className="text-muted text-xs font-bold uppercase tracking-[0.08em]">Xray Cargo</div>
+                <h2 className="m-0 text-[21px] font-extrabold tracking-tight">
+                  {PAGE_TITLES[activePath] ?? 'Xray Cargo'}
+                </h2>
+              </>
+            )}
+          </div>
+        </div>
+        <main className="p-4 sm:px-7 pb-7 w-full min-w-0">
+          {activePath === "/dashboard" && <Suspense fallback={<div className="panel muted">Memuat dashboard…</div>}><Dashboard session={session} onEvent={onEvent} /></Suspense>}
+          {activePath === "/live" && (
+            <LiveTab warehouse={user.access} frames={frames} session={session} onSessionChange={refreshSession} onEvent={onEvent} />
+          )}
+          {activePath === "/awb" && !awbDetailId && (
+            <AwbTab onChanged={refreshSession} onOpenDetail={(id) => navigate(`/awb/${id}`)} onEvent={onEvent} connected={connected} />
+          )}
+          {activePath === "/labels" && <LabelsTab />}
+          {awbDetailId && (
+            <AwbDetailPage
+              id={awbDetailId}
+              onBack={() => navigate("/awb")}
+              onChanged={refreshSession}
+            />
+          )}
+        </main>
+      </div>
+    </div>
+  );
+}

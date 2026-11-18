@@ -1,0 +1,37 @@
+.env
+.env.*
+!.env.example
+
+# Local runtime, user data, credentials and model weights
+.venv/
+venv/
+data/
+*.db
+*.sqlite
+*.sqlite3
+*.pgpass
+*.pem
+*.key
+*.p12
+*.pfx
+*.pt
+*.pth
+*.onnx
+
+# Dependencies, builds and caches
+node_modules/
+ui/dist/
+dist/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage/
+.DS_Store
+._*
+
+# Editor and local agent state
+.vscode/
+.idea/
+.kilo/agent-manager.json

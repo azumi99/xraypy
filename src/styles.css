@@ -1,0 +1,116 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,700;9..40,800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Ambient vibrant blobs behind the glass layers */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background:
+    radial-gradient(600px 400px at 8% 0%, #2563eb26, transparent 70%),
+    radial-gradient(700px 500px at 100% 10%, #a855f71f, transparent 70%),
+    radial-gradient(600px 500px at 55% 110%, #22d3ee1a, transparent 70%);
+}
+
+@layer components {
+  .glass {
+    @apply bg-surface-card/70 border border-white/10 backdrop-blur-md;
+  }
+  .panel {
+    @apply glass rounded-[20px] p-5;
+  }
+  .panel h3 {
+    @apply mb-3 text-[15px] font-extrabold tracking-tight;
+  }
+
+  .side-nav-item {
+    @apply flex items-center gap-3 w-full px-4 py-3 rounded-xl text-left
+           text-muted text-[13.5px] font-bold cursor-pointer border-0
+           bg-transparent transition-colors duration-200;
+  }
+  .side-nav-item:hover {
+    @apply bg-white/5 text-ink;
+  }
+  .side-nav-item.active {
+    @apply bg-grad-nav text-white shadow-glow;
+  }
+  .side-nav-item .badge {
+    @apply ml-auto bg-white/15 text-white;
+  }
+  .side-nav-item.active .badge {
+    @apply bg-white text-brand-deep;
+  }
+
+  .btn {
+    @apply px-[18px] py-2.5 rounded-xl font-bold cursor-pointer border-0
+           transition-all duration-200 active:scale-[0.97];
+  }
+  .btn-primary {
+    @apply btn bg-brand-deep text-white shadow-glow hover:bg-brand;
+  }
+  .btn-danger {
+    @apply btn bg-bad text-white shadow-glow-red hover:bg-red-600;
+  }
+  .btn-ghost {
+    @apply px-3.5 py-2 rounded-xl font-bold cursor-pointer bg-white/5
+           text-muted border border-line hover:border-brand hover:text-brand
+           transition-colors duration-200;
+  }
+
+  .badge {
+    @apply inline-block px-2.5 py-0.5 rounded-full bg-brand/20 text-brand-soft
+           text-[11px] font-extrabold;
+  }
+
+  .field {
+    @apply bg-white/5 text-ink border border-line rounded-xl px-3.5 py-2.5
+           font-sans outline-none transition-colors duration-200
+           focus:border-brand;
+  }
+
+
+}
+
+@layer base {
+  table { @apply w-full border-separate border-spacing-0; }
+  th {
+    @apply text-left px-2.5 py-2 text-muted font-bold text-[11.5px]
+           uppercase tracking-wider border-b border-line;
+  }
+  td { @apply px-2.5 py-2.5 border-b border-line/70 align-middle; }
+  tbody tr { @apply transition-colors duration-200; }
+  tbody tr:hover td { @apply bg-white/5; }
+
+  input[type="text"]:focus-visible { outline: 2px solid #3b82f6; outline-offset: 2px; }
+  .side-nav-item:focus-visible { outline: 2px solid #3b82f6; outline-offset: 2px; }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      transition-duration: 0.01ms !important;
+      animation-duration: 0.01ms !important;
+    }
+  }
+}
+
+/* ===== dynamic classes (built in JS) — plain CSS so Tailwind never purges them ===== */
+svg.ic { width:18px; height:18px; flex-shrink:0; }
+svg.ic-lg { width:22px; height:22px; }
+.muted { color:#94a3b8; }
+.st-saved, .st-NEW, .st-PAIRED { color:#22c55e; font-weight:800; }
+.st-duplicate, .st-DUPLICATE { color:#ef4444; font-weight:800; }
+.st-review, .st-REVIEW { color:#f97316; font-weight:800; }
+.st-tracking { color:#eab308; font-weight:800; }
+.st-WAITING { color:#93c5fd; font-weight:800; }
+.st-CANCELLED { color:#94a3b8; }
+.rev-card { display:flex; gap:14px; align-items:flex-start;
+            border-bottom:1px solid rgba(71,85,105,.35); padding:14px 0; }
+.rev-card img { width:150px; height:110px; object-fit:contain; background:#000;
+                border-radius:12px; border:1px solid rgba(255,255,255,.1); }
+.rev-card .st-review { display:inline-block; background:#f9731626;
+                       padding:2px 10px; border-radius:999px; }
+#wsstate.on { color:#22c55e; font-weight:800; background:#22c55e1f; }
+.side-footer .sess-live { color:#22c55e; font-weight:800; }

@@ -1,0 +1,26 @@
+[project]
+name = "cv-service"
+version = "0.1.0"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-m 'not slow'"
+markers = ["slow: tests that download/run real model weights (run with -m slow)"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B"]
+ignore = ["E501"]
+
+[tool.black]
+line-length = 110
+target-version = ["py311"]
+
+[tool.coverage.run]
+source = ["app"]
+omit = ["app/migrations/*"]

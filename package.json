@@ -1,0 +1,22 @@
+{
+  "name": "cv-service-ui",
+  "version": "1.0.0",
+  "description": "FastAPI service yang menangkap video dari layar mesin X-ray (HDMI capture), mendeteksi tiap paket pada strip bergulir, menghitung embedding visual (DINOv2/ResNet), memutuskan **NEW / REVIEW / DUPLICATE**, lalu memasangkan paket **NEW** ke antrean **AWB** secara berurutan (`idx`) — semuanya full Python, tanpa NestJS.",
+  "main": "index.js",
+  "directories": {
+    "test": "tests"
+  },
+  "scripts": {
+    "build:css": "tailwindcss -i ./src/styles.css -o ./static/tw.css --minify",
+    "watch:css": "tailwindcss -i ./src/styles.css -o ./static/tw.css --watch"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "autoprefixer": "^10.6.2",
+    "postcss": "^8.5.32",
+    "tailwindcss": "^3.4.19"
+  }
+}

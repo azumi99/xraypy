@@ -1,0 +1,20 @@
+# Runtime dependencies (pinned majors; tested on Python 3.11, macOS arm64 CPU)
+fastapi>=0.115,<0.116
+python-multipart>=0.0.12,<1
+Pillow>=10,<13
+openpyxl>=3.1,<4
+xlrd>=2.0,<3
+uvicorn[standard]>=0.32,<0.34
+pydantic>=2.9,<3
+pydantic-settings>=2.6,<3
+asyncpg>=0.30,<0.31
+PyMySQL>=1.1,<2
+PyJWT>=2.10,<3
+pgvector>=0.3.6,<0.4
+numpy>=1.26,<3
+opencv-python>=4.10,<5
+torch>=2.5,<3
+torchvision>=0.20,<1
+transformers>=4.46,<6
+ultralytics>=8.3,<10
+scikit-learn>=1.5,<2
