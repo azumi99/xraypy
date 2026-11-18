@@ -96,7 +96,10 @@ export default function LiveTab({ warehouse, frames, session, onSessionChange, o
           {waiting.map((awb, index) => (
             <li key={awb.id} className={`scan-list-item ${leaving.includes(awb.awb_number) ? "scan-list-item-leaving" : ""}`}>
               <span className="scan-list-index">{String(index + 1).padStart(2, "0")}</span>
-              <span className="scan-list-number">{awb.awb_number}</span>
+              <span className="scan-list-number">
+                <span className="scan-list-waybill"><span className="scan-list-waybill-label">MAWB</span><span>{awb.awb_number || "—"}</span></span>
+                <span className="scan-list-waybill"><span className="scan-list-waybill-label">HAWB</span><span>{awb.hawb_number || "—"}</span></span>
+              </span>
               <span className="scan-list-status">{leaving.includes(awb.awb_number) ? "Tersimpan" : "Waiting"}</span>
             </li>
           ))}

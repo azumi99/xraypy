@@ -384,6 +384,9 @@
   .scan-list-item { display: flex; align-items: center; gap: 12px; min-width: 0; padding: 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-cream); }
   .scan-list-index { color: var(--text-muted); font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; }
   .scan-list-number { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 13px; font-weight: 700; }
+  .scan-list-waybill { display: flex; align-items: baseline; gap: 8px; }
+  .scan-list-waybill + .scan-list-waybill { margin-top: 4px; }
+  .scan-list-waybill-label { flex: 0 0 42px; color: var(--text-muted); font-size: 10px; font-weight: 700; letter-spacing: .04em; }
   .scan-list-status { flex-shrink: 0; padding: 4px 9px; border: 1px solid var(--border); border-radius: 999px; background: var(--secondary); color: var(--text); font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
   .scan-list-item-leaving { animation: scan-complete 600ms ease forwards; }
   .scan-list-item-leaving .scan-list-status { background: var(--accent-mint); border-color: var(--cta); color: var(--text); }
