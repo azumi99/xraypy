@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import jwt
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -29,7 +29,7 @@ from .events import EventBus
 from .labels import router as labels_router
 from .manifest_tunnels import manifest_tunnels
 from .pipeline import Pipeline
-from .security import COOKIE, REFRESH_AFTER, SESSION_SECONDS, identity, issue_session, same_origin, session_claims
+from .security import COOKIE, REFRESH_AFTER, SESSION_SECONDS, identity, issue_session, require_operator, same_origin, session_claims
 from .sources import SourceManager
 from .warehouse import warehouse_context
 
@@ -78,6 +78,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.bus = bus
         app.state.pipeline = pipeline
         settings.crop_dir.mkdir(parents=True, exist_ok=True)
+        from .photo_sync import PhotoSync
+        photo_sync = PhotoSync(settings, store)
+        app.state.photo_sync = photo_sync
+        dedup.photo_sync = photo_sync
+        async def supervise_photo_sync():
+            while True:
+                try:
+                    await photo_sync.run()
+                    return
+                except Exception:  # noqa: BLE001 — retry after transient outbox errors
+                    logger.exception("photo sync worker stopped; retrying")
+                    await asyncio.sleep(5)
+
+        sync_task = asyncio.create_task(supervise_photo_sync()) if photo_sync.enabled else None
         logger.info(
             "cv-service ready (model=%s store=%s mode=%s)",
             embedder.name,
@@ -85,6 +99,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             settings.pipeline_mode,
         )
         yield
+        if sync_task is not None:
+            sync_task.cancel()
+            await asyncio.gather(sync_task, return_exceptions=True)
         from .warehouse import warehouse_context
         for access, runtime in getattr(app.state, "warehouse_runtimes", {}).items():
             token = warehouse_context.set(access)
@@ -103,8 +120,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-        if settings.photo_sync.enabled:
-            logger.error("photo-sync disabled: safe photo verification is not implemented")
         async with manifest_tunnels(), db_tunnel(settings), backend_lifespan(app):
             yield
 
@@ -115,6 +130,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.middleware("http")
     async def protect(request: Request, call_next):
         path = request.url.path
+        if path == "/api/sync/photos" and request.method in ("GET", "PUT"):
+            from .photo_receiver import MAX_BYTES, _site
+            try:
+                _site(settings, request.headers.get("authorization"))
+            except HTTPException as exc:
+                return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+            if request.method == "PUT":
+                length = request.headers.get("content-length", "")
+                if not length.isascii() or not length.isdigit() or int(length) > MAX_BYTES + 65536:
+                    return JSONResponse({"detail": "Request body too large or length missing"}, status_code=413)
+            return await call_next(request)
         if path == "/api" or path.startswith("/api/") or path == "/crops" or path.startswith("/crops/"):
             if request.method not in ("GET", "HEAD", "OPTIONS") and not same_origin(request):
                 return JSONResponse({"detail": "invalid origin"}, status_code=403)
@@ -169,6 +195,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return response
 
     app.include_router(awb_router, prefix="/api")
+    from .photo_receiver import router as photo_receiver_router
+    from .photo_delivery import router as photo_delivery_router
+    app.include_router(photo_receiver_router)
+    app.include_router(photo_delivery_router)
+
+    @app.get("/api/sync/status")
+    async def photo_sync_status(request: Request, ref: list[str] = Query(default=[]), _: None = Depends(require_operator)):
+        if len(ref) > 100:
+            raise HTTPException(422, "Too many photo references")
+        from .warehouse import current_warehouse
+        site = current_warehouse()
+        allowed = await request.app.state.store.photo_references_existing(ref)
+        sync = request.app.state.photo_sync
+        return {"items": await asyncio.to_thread(sync.status, site, allowed)}
     app.include_router(labels_router, prefix="/api")
     app.include_router(review_router, prefix="/api")
     from .photos import router as photos_router

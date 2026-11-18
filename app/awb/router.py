@@ -285,6 +285,12 @@ async def upload_label_photo(
             path.unlink(missing_ok=True)
         raise
     target.label_photo_ref = ref
+    sync = getattr(request.app.state, "photo_sync", None)
+    if sync is not None and sync.enabled:
+        try:
+            await asyncio.to_thread(sync.enqueue, current_warehouse(), ref)
+        except Exception:  # noqa: BLE001 — photo is already attached; do not report a failed upload
+            logger.exception("failed to enqueue finalized label photo")
     await live_resources(request.app).bus.publish("awb.updated", {"id": awb_id})
     return await _dump_detail(request, target)
 

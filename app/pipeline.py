@@ -89,7 +89,8 @@ def _save_capture(path: Path, bgra: np.ndarray, view: str, awb=None, *, captured
     output[:height, :width] = bgra
     for i, text in enumerate(footer_lines):
         cv2.putText(output, text, (padding, height + padding + 8 + i * line_height), font, scale, (255, 255, 255, 255), 1, cv2.LINE_AA)
-    _write_capture(path, encode_png(output), owned=owned)
+    from .photo_sync import mark_final_png
+    _write_capture(path, mark_final_png(encode_png(output)), owned=owned)
 
 
 STATUS_COLORS = {
@@ -354,9 +355,11 @@ class Pipeline:
         awb = await self._capture_awb(decision)
         try:
             await asyncio.to_thread(_save_capture, crop_path, bgra, "top", awb, captured_at=captured_at, owned=owned)
+            await self._enqueue_final_photo(crop_rel)
         except Exception:  # noqa: BLE001
             logger.exception("failed watermarking crop for seq %d; original preserved", parcel.seq)
         side_ref = None
+        side_finalized = False
         if side_bgra is not None:
             side_rel = f"{batch_id}/seq_{parcel.seq}_side.png"
             side_path = Path(self._settings.crop_dir, side_rel)
@@ -368,6 +371,7 @@ class Pipeline:
             else:
                 try:
                     await asyncio.to_thread(_save_capture, side_path, side_bgra, "side", awb, captured_at=captured_at, owned=side_owned)
+                    side_finalized = True
                 except Exception:  # noqa: BLE001
                     logger.exception("failed watermarking side crop for seq %d; original preserved", parcel.seq)
         self.session.parcel_count += 1
@@ -384,6 +388,8 @@ class Pipeline:
                     model_name=self._dedup.worker.model_name,
                     model_version=self._dedup.worker.model_version,
                 )
+                if side_finalized:
+                    await self._enqueue_final_photo(side_ref)
             except Exception:  # noqa: BLE001
                 logger.exception("failed storing side capture for seq %d", parcel.seq)
         await self._apply_decision(parcel.seq, decision, batch_id)
@@ -397,6 +403,16 @@ class Pipeline:
         except Exception:  # noqa: BLE001
             logger.exception("failed preparing crop for batch %s track %s", batch_id, seq)
             return None
+
+    async def _enqueue_final_photo(self, ref):
+        from .warehouse import current_warehouse
+
+        sync = getattr(self._dedup, "photo_sync", None)
+        if sync is not None and sync.enabled:
+            try:
+                await asyncio.to_thread(sync.enqueue, current_warehouse(), ref, True)
+            except Exception:  # noqa: BLE001 — capture is already committed; do not lose the response
+                logger.exception("failed to enqueue finalized photo for synchronization")
 
     @staticmethod
     def _owns_capture(decision: Decision, batch_id: str, seq: int, crop_ref: str) -> bool:
@@ -642,8 +658,10 @@ class Pipeline:
             return
         try:
             await asyncio.to_thread(_save_capture, path, bgra, "side", slot["awb"], captured_at=slot.get("side_captured_at"), owned=owned)
+            side_finalized = True
         except Exception:  # noqa: BLE001
             logger.exception("failed watermarking side capture for parcel %s; original preserved", slot["seq"])
+            side_finalized = False
         try:
             embedding = await self._dedup.worker.embed(bgra)
         except Exception:  # noqa: BLE001
@@ -654,6 +672,8 @@ class Pipeline:
                 slot["decision"].record.id, embedding, side_ref,
                 model_name=self._dedup.worker.model_name, model_version=self._dedup.worker.model_version,
             )
+            if side_finalized:
+                await self._enqueue_final_photo(side_ref)
         except Exception:  # noqa: BLE001
             logger.exception("failed storing side capture for parcel %s", slot["seq"])
 
@@ -696,6 +716,7 @@ class Pipeline:
         awb = await self._capture_awb(decision)
         try:
             await asyncio.to_thread(_save_capture, crop_path, bgra, "top", awb, captured_at=side.get("captured_at") if side else None, owned=owned)
+            await self._enqueue_final_photo(crop_rel)
         except Exception:  # noqa: BLE001
             logger.exception("failed watermarking crop for parcel %s; original preserved", det.parcel_id)
         if side is not None:

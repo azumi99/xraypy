@@ -65,6 +65,31 @@ class PgVectorStore(IdentityStore):
     async def list_labels(self):
         return [dict(row) for row in await self._run("SELECT * FROM cv.label_print ORDER BY id")]
 
+    async def photo_reference_exists(self, ref: str) -> bool:
+        row = await self._runrow(
+            "SELECT EXISTS (SELECT 1 FROM cv.awb WHERE label_photo_ref = $1) "
+            "OR EXISTS (SELECT 1 FROM cv.parcel_identity WHERE crop_ref = $1 OR crop_ref_side = $1) AS found", ref,
+        )
+        return bool(row["found"])
+
+    async def list_photo_references(self) -> list[str]:
+        rows = await self._run(
+            "SELECT label_photo_ref AS ref FROM cv.awb WHERE label_photo_ref IS NOT NULL "
+            "UNION SELECT crop_ref FROM cv.parcel_identity WHERE crop_ref IS NOT NULL "
+            "UNION SELECT crop_ref_side FROM cv.parcel_identity WHERE crop_ref_side IS NOT NULL"
+        )
+        return [row["ref"] for row in rows]
+
+    async def photo_references_existing(self, refs: list[str]) -> set[str]:
+        if not refs:
+            return set()
+        rows = await self._run(
+            "SELECT label_photo_ref AS ref FROM cv.awb WHERE label_photo_ref = ANY($1::text[]) "
+            "UNION SELECT crop_ref FROM cv.parcel_identity WHERE crop_ref = ANY($1::text[]) "
+            "UNION SELECT crop_ref_side FROM cv.parcel_identity WHERE crop_ref_side = ANY($1::text[])", refs,
+        )
+        return {row["ref"] for row in rows}
+
     async def label_mawbs(self, hawb_number: str) -> list[str]:
         return [row["mawb"] for row in await self._run(
             "SELECT DISTINCT mawb FROM cv.label_print WHERE hawb=$1 ORDER BY mawb", hawb_number

@@ -253,6 +253,43 @@ class SqliteStore(IdentityStore):
             "WHERE name IN ('awb_bgd', 'awb_cas')"
         ).fetchone()[0]
 
+    async def photo_reference_exists(self, ref: str) -> bool:
+        def run():
+            with self._lock:
+                row = self._connect().execute(
+                    "SELECT EXISTS (SELECT 1 FROM awb WHERE label_photo_ref = ?) "
+                    "OR EXISTS (SELECT 1 FROM parcel_identity WHERE crop_ref = ? OR crop_ref_side = ?) AS found",
+                    (ref, ref, ref),
+                ).fetchone()
+                return bool(row["found"])
+        return await asyncio.to_thread(run)
+
+    async def list_photo_references(self) -> list[str]:
+        def run():
+            with self._lock:
+                rows = self._connect().execute(
+                    "SELECT label_photo_ref AS ref FROM awb WHERE label_photo_ref IS NOT NULL "
+                    "UNION SELECT crop_ref FROM parcel_identity WHERE crop_ref IS NOT NULL "
+                    "UNION SELECT crop_ref_side FROM parcel_identity WHERE crop_ref_side IS NOT NULL"
+                ).fetchall()
+                return [row["ref"] for row in rows]
+        return await asyncio.to_thread(run)
+
+    async def photo_references_existing(self, refs: list[str]) -> set[str]:
+        if not refs:
+            return set()
+        def run():
+            placeholders = ",".join("?" for _ in refs)
+            with self._lock:
+                rows = self._connect().execute(
+                    f"SELECT label_photo_ref AS ref FROM awb WHERE label_photo_ref IN ({placeholders}) "
+                    f"UNION SELECT crop_ref FROM parcel_identity WHERE crop_ref IN ({placeholders}) "
+                    f"UNION SELECT crop_ref_side FROM parcel_identity WHERE crop_ref_side IN ({placeholders})",
+                    (*refs, *refs, *refs),
+                ).fetchall()
+                return {row["ref"] for row in rows}
+        return await asyncio.to_thread(run)
+
     async def list_labels(self):
         def run():
             with self._lock:

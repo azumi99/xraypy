@@ -52,6 +52,10 @@ service menolak start dengan petunjuk perbaikan.
 
 ## Standalone CAS photo sync
 
+**Legacy:** do not run this rsync job against the same destination as the
+application photo-sync receiver. It can send an unfinished capture or overwrite
+an already verified photo. Stop existing jobs before enabling the new receiver.
+
 `tools/photo_sync.py` is a separate Python 3.11+ process, independent of the API and database. It sends only regular PNG/JPG/JPEG files under the locally owned `data/crops/cas/` tree, retaining `cas/` in the destination. Legacy root files and other tenants are excluded. Hidden entries, common temporary names and symlinks are skipped. No remote files are deleted. The first scan is immediate; reconciliation repeats 15 seconds after each attempt, with checksums and retries after failures. Rsync normally transfers into a temporary file and renames it into place; it is not invoked with `--inplace`.
 
 Configure these environment variables outside source control (all local paths must be absolute, exist, and have no symlink components):

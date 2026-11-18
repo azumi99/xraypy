@@ -171,6 +171,12 @@ class Settings(BaseSettings):
     login_password: str | None = None
     jwt_secret: str | None = None
     bootstrap_password: str | None = None
+    photo_sync_enabled: bool = False
+    photo_sync_url: str = ""
+    photo_sync_outbox_path: Path = Path("data/photo-sync-outbox.sqlite3")
+    photo_sync_bgd_token: str = ""
+    photo_sync_cas_token: str = ""
+    photo_sync_devices_json: str = ""
     # Physical camera indices must be explicitly assigned to one warehouse.
     warehouse_bgd_cameras: str = ""
     warehouse_cas_cameras: str = ""

@@ -1,6 +1,9 @@
 import { useEffect, useState } from "react";
 import api, { del } from "../api";
 import { useAwbDisplayStore } from "../store/awbDisplay";
+import { photoRefs, photoSyncPath, photoSyncStatus } from "../photoSync";
+
+const photoUrl = (ref) => `/api/sync/photo?ref=${encodeURIComponent(ref)}`;
 
 /** Halaman detail AWB (route /awb/:id) — foto 2 POV + info parcel + audit. */
 export default function AwbDetailPage({ id, onBack, onChanged }) {
@@ -11,7 +14,35 @@ export default function AwbDetailPage({ id, onBack, onChanged }) {
   const [manifestAttempt, setManifestAttempt] = useState(0);
   const [error, setError] = useState(false);
   const [groupItems, setGroupItems] = useState([]);
+  const [syncItems, setSyncItems] = useState({});
   const grouped = useAwbDisplayStore((state) => state.grouped);
+
+  const displayedItems = data && !notFound && !error && String(data.id) === String(id)
+    ? (grouped && groupItems.length ? groupItems.map((item) => String(item.id) === String(data.id) ? data : item) : [data]) : [];
+  const refsKey = JSON.stringify(photoRefs(displayedItems));
+
+  useEffect(() => {
+    const refs = JSON.parse(refsKey);
+    let active = true;
+    let inFlight = false;
+    setSyncItems({});
+    if (!refs.length) return () => { active = false; };
+    const refresh = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const result = await api(photoSyncPath(refs));
+        if (active) setSyncItems(result?.items ?? {});
+      } catch {
+        if (active) setSyncItems({});
+      } finally {
+        inFlight = false;
+      }
+    };
+    refresh();
+    const timer = setInterval(refresh, 15000);
+    return () => { active = false; clearInterval(timer); };
+  }, [refsKey]);
 
   const load = async () => {
     try {
@@ -105,35 +136,33 @@ export default function AwbDetailPage({ id, onBack, onChanged }) {
       <div className="awb-detail-grid">
         <section className="panel awb-scan-panel">
           <div className="awb-detail-section-title"><div><span className="awb-eyebrow">HASIL PEMINDAIAN</span><h3>Foto X-ray</h3></div><span className="muted text-xs">Klik foto untuk ukuran penuh</span></div>
-          {data.label_photo_ref && <div className="awb-scan-group">
-            <div className="awb-scan-group-label"><span>Foto Label (QR)</span><span className="muted">{data.timecreated && !Number.isNaN(new Date(data.timecreated).getTime()) ? new Date(data.timecreated).toLocaleString("id-ID", { dateStyle: "medium", timeStyle: "short" }) : ""}</span></div>
-            <div className="awb-scans">
-              <div className="awb-scan">
-                <div className="awb-scan-label"><span>QR</span> Label</div>
-                <a className="awb-scan-image" href={`/crops/${data.label_photo_ref}`} target="_blank" rel="noreferrer"><img src={`/crops/${data.label_photo_ref}`} alt="Foto label hasil scan QR" title="Lihat ukuran penuh" /></a>
-              </div>
-            </div>
-          </div>}
-          {(grouped && groupItems.length ? groupItems : [data]).map((item) => {
-            const parcel = item.id === data.id ? p : item.parcel;
+          {displayedItems.map((item) => {
+            const parcel = item.parcel;
             return <div className="awb-scan-group" key={item.id}>
               <div className="awb-scan-group-label"><span>{item.hawb_number || "HAWB tidak tersedia"} | Part {item.part ?? "—"} / Total {item.total ?? "—"}</span><span className="muted">#{item.id}</span></div>
               <div className="awb-scans">
+                {item.label_photo_ref && <div className="awb-scan">
+                  <div className="awb-scan-label"><span>QR</span> Label</div>
+                  <a className="awb-scan-image" href={photoUrl(item.label_photo_ref)} target="_blank" rel="noreferrer"><img src={photoUrl(item.label_photo_ref)} alt={`Foto label hasil scan QR ${item.hawb_number ?? item.id}`} title="Lihat ukuran penuh" /></a>
+                  <div className="muted text-xs">Sync: {photoSyncStatus(syncItems, item.label_photo_ref)}</div>
+                </div>}
                 <div className="awb-scan">
                   <div className="awb-scan-label"><span>01</span> Tampak Atas</div>
                   {parcel?.crop_ref ? (
-                    <a className="awb-scan-image" href={`/crops/${parcel.crop_ref}`} target="_blank" rel="noreferrer">
-                      <img src={`/crops/${parcel.crop_ref}`} alt={`X-ray tampak atas ${item.hawb_number ?? item.id}`} title="Lihat ukuran penuh" />
+                    <a className="awb-scan-image" href={photoUrl(parcel.crop_ref)} target="_blank" rel="noreferrer">
+                      <img src={photoUrl(parcel.crop_ref)} alt={`X-ray tampak atas ${item.hawb_number ?? item.id}`} title="Lihat ukuran penuh" />
                     </a>
                   ) : <div className="awb-scan-empty">Belum ada foto tampak atas</div>}
+                  {parcel?.crop_ref && <div className="muted text-xs">Sync: {photoSyncStatus(syncItems, parcel.crop_ref)}</div>}
                 </div>
                 <div className="awb-scan">
                   <div className="awb-scan-label"><span>02</span> Tampak Samping</div>
                   {parcel?.crop_ref_side ? (
-                    <a className="awb-scan-image" href={`/crops/${parcel.crop_ref_side}`} target="_blank" rel="noreferrer">
-                      <img src={`/crops/${parcel.crop_ref_side}`} alt={`X-ray tampak samping ${item.hawb_number ?? item.id}`} title="Lihat ukuran penuh" />
+                    <a className="awb-scan-image" href={photoUrl(parcel.crop_ref_side)} target="_blank" rel="noreferrer">
+                      <img src={photoUrl(parcel.crop_ref_side)} alt={`X-ray tampak samping ${item.hawb_number ?? item.id}`} title="Lihat ukuran penuh" />
                     </a>
                   ) : <div className="awb-scan-empty">Belum ada foto tampak samping</div>}
+                  {parcel?.crop_ref_side && <div className="muted text-xs">Sync: {photoSyncStatus(syncItems, parcel.crop_ref_side)}</div>}
                 </div>
               </div>
             </div>;

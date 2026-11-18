@@ -1,4 +1,231 @@
-"""Photo sync must not run before captures have verifiable final contents."""
+"""Durable outbox for finalized, database-referenced photos."""
+
+import asyncio
+import hashlib
+import logging
+import os
+import secrets
+import sqlite3
+import stat
+import struct
+import time
+import zlib
+from contextlib import contextmanager
+from pathlib import Path
+from urllib.parse import urlsplit
+
+import httpx
+
+logger = logging.getLogger(__name__)
+_FINAL_CHUNK = b"xray-cargo-final\x001"
+
+
+def mark_final_png(data: bytes) -> bytes:
+    """Add an internal finalization marker without altering image pixels."""
+    if not data.startswith(b"\x89PNG\r\n\x1a\n") or data[-12:-4] != b"\x00\x00\x00\x00IEND":
+        raise ValueError("invalid PNG")
+    payload = b"tEXt" + _FINAL_CHUNK
+    chunk = struct.pack(">I", len(_FINAL_CHUNK)) + payload + struct.pack(">I", zlib.crc32(payload))
+    return data[:-12] + chunk + data[-12:]
+
+
+def is_final_png(data: bytes) -> bool:
+    if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return False
+    offset = 8
+    while offset + 12 <= len(data):
+        size = struct.unpack_from(">I", data, offset)[0]
+        end = offset + 12 + size
+        if end > len(data):
+            return False
+        kind, value = data[offset + 4:offset + 8], data[offset + 8:offset + 8 + size]
+        if kind == b"tEXt" and value == _FINAL_CHUNK:
+            return struct.unpack_from(">I", data, offset + 8 + size)[0] == zlib.crc32(kind + value)
+        if kind == b"IEND":
+            return False
+        offset = end
+    return False
+
+class PhotoSync:
+    def __init__(self, settings, store=None):
+        self.enabled = getattr(settings, "photo_sync_enabled", False)
+        if not self.enabled:
+            return
+        if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY") or os.open not in os.supports_dir_fd:
+            raise RuntimeError("Photo sync requires secure descriptor-relative file access; Windows is not supported yet")
+        self.store = store
+        self.root = Path(settings.crop_dir)
+        self.outbox = str(settings.photo_sync_outbox_path)
+        self.tokens = {
+            "bgd": settings.photo_sync_bgd_token,
+            "cas": settings.photo_sync_cas_token,
+        }
+        url = urlsplit(settings.photo_sync_url)
+        if (url.scheme != "https" or not url.hostname or url.username or url.password
+                or url.query or url.fragment):
+            raise ValueError("photo sync URL must be an HTTPS base URL")
+        if not all(self.tokens.values()):
+            raise ValueError("photo sync requires a token for each site")
+        self.url = settings.photo_sync_url.rstrip("/") + "/api/sync/photos"
+        with self._db() as db:
+            db.execute("""CREATE TABLE IF NOT EXISTS photo_outbox (
+                site TEXT NOT NULL, ref TEXT NOT NULL, sha256 TEXT NOT NULL,
+                size INTEGER NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL,
+                next_attempt REAL NOT NULL, lease_token TEXT, lease_until REAL NOT NULL DEFAULT 0,
+                PRIMARY KEY (site, ref))""")
+            columns = {row[1] for row in db.execute("PRAGMA table_info(photo_outbox)")}
+            if "lease_token" not in columns:
+                db.execute("ALTER TABLE photo_outbox ADD COLUMN lease_token TEXT")
+            if "lease_until" not in columns:
+                db.execute("ALTER TABLE photo_outbox ADD COLUMN lease_until REAL NOT NULL DEFAULT 0")
+
+    @contextmanager
+    def _db(self):
+        db = sqlite3.connect(self.outbox, timeout=1)
+        try:
+            with db:
+                yield db
+        finally:
+            db.close()
+
+    @staticmethod
+    def _parts(site, ref):
+        if site not in ("bgd", "cas") or not isinstance(ref, str):
+            raise ValueError("invalid site or photo reference")
+        parts = ref.split("/")
+        if (len(parts) < 2 or any(p in ("", ".", "..") or "\\" in p or "\0" in p for p in parts)
+                or (parts[0] == "cas") != (site == "cas")):
+            raise ValueError("invalid site or photo reference")
+        return parts
+
+    def _read(self, site, ref):
+        parts = self._parts(site, ref)
+        directory = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            for part in parts[:-1]:
+                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+                os.close(directory)
+                directory = child
+            fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+            with os.fdopen(fd, "rb") as photo:
+                info = os.fstat(photo.fileno())
+                if not stat.S_ISREG(info.st_mode):
+                    raise ValueError("photo is not a regular file")
+                if info.st_size > 12 * 1024 * 1024:
+                    raise ValueError("photo exceeds upload size limit")
+                return photo.read(12 * 1024 * 1024 + 1)
+        finally:
+            os.close(directory)
+
+    def enqueue(self, site, ref, require_final=False):
+        if not self.enabled:
+            return
+        data = self._read(site, ref)
+        if require_final and not is_final_png(data):
+            raise ValueError("photo is not finalized")
+        digest = hashlib.sha256(data).hexdigest()
+        with self._db() as db:
+            db.execute("INSERT OR IGNORE INTO photo_outbox (site,ref,sha256,size,status,attempts,next_attempt) VALUES (?, ?, ?, ?, 'pending', 0, 0)",
+                       (site, ref, digest, len(data)))
+            row = db.execute("SELECT sha256, size FROM photo_outbox WHERE site=? AND ref=?",
+                             (site, ref)).fetchone()
+            if row != (digest, len(data)):
+                raise ValueError("photo reference already has different contents")
+
+    def status(self, site, refs):
+        if not self.enabled:
+            return {}
+        if site not in self.tokens:
+            raise ValueError("invalid site")
+        result = {}
+        with self._db() as db:
+            for ref in refs:
+                self._parts(site, ref)
+                row = db.execute("SELECT status FROM photo_outbox WHERE site=? AND ref=?",
+                                 (site, ref)).fetchone()
+                if row:
+                    result[ref] = row[0]
+        return result
+
+    async def reconcile(self):
+        """Recover DB-referenced photos finalized before an interrupted enqueue."""
+        if not self.enabled or self.store is None:
+            return
+        from .warehouse import warehouse_context
+
+        for site in ("bgd", "cas"):
+            token = warehouse_context.set(site)
+            try:
+                refs = await self.store.list_photo_references()
+            finally:
+                warehouse_context.reset(token)
+            with self._db() as db:
+                known = {row[0] for row in db.execute("SELECT ref FROM photo_outbox WHERE site=?", (site,))}
+            for ref in refs:
+                if ref in known:
+                    continue
+                try:
+                    label_prefix = "cas/label-photos/" if site == "cas" else "label-photos/"
+                    is_label = ref.startswith(label_prefix) and ref.lower().endswith((".jpg", ".jpeg", ".png"))
+                    await asyncio.to_thread(self.enqueue, site, ref, not is_label)
+                except (OSError, ValueError):
+                    logger.warning("photo sync recovery skipped an inaccessible or invalid photo")
+
+    async def run(self):
+        if not self.enabled:
+            return
+        async with httpx.AsyncClient(timeout=30, follow_redirects=False) as client:
+            next_reconcile = 0.0
+            while True:
+                if self.store is not None and time.monotonic() >= next_reconcile:
+                    await self.reconcile()
+                    next_reconcile = time.monotonic() + 60
+                lease = secrets.token_hex(16)
+                with self._db() as db:
+                    db.execute("BEGIN IMMEDIATE")
+                    now = time.time()
+                    row = db.execute("""SELECT site, ref, sha256, size, attempts FROM photo_outbox
+                        WHERE status='pending' AND next_attempt<=? AND lease_until<=?
+                        ORDER BY next_attempt, rowid LIMIT 1""", (now, now)).fetchone()
+                    if row:
+                        db.execute("UPDATE photo_outbox SET lease_token=?, lease_until=? WHERE site=? AND ref=?",
+                                   (lease, now + 120, row[0], row[1]))
+                if row is None:
+                    await asyncio.sleep(1)
+                    continue
+                site, ref, digest, size, attempts = row
+                try:
+                    data = await asyncio.to_thread(self._read, site, ref)
+                except OSError:
+                    state = "pending"
+                except ValueError:
+                    state = "failed"
+                else:
+                    if len(data) != size or hashlib.sha256(data).hexdigest() != digest:
+                        state = "failed"
+                    else:
+                        try:
+                            response = await client.put(
+                                self.url, headers={"Authorization": f"Bearer {self.tokens[site]}"},
+                                data={"ref": ref, "sha256": digest},
+                                files={"file": (Path(ref).name, data, "application/octet-stream")},
+                            )
+                            try:
+                                ack = response.json()
+                            except ValueError:
+                                ack = None
+                            confirmed = (response.status_code == 200 and isinstance(ack, dict)
+                                         and ack.get("status") in ("created", "exists") and ack.get("sha256") == digest)
+                            state = ("synced" if confirmed else
+                                     "pending" if response.status_code in (200, 401, 403, 404, 429) or response.status_code >= 500 else "failed")
+                        except httpx.RequestError:
+                            state = "pending"
+                attempts += 1
+                delay = min(300, 2 ** min(attempts - 1, 9)) if state == "pending" else 0
+                with self._db() as db:
+                    db.execute("""UPDATE photo_outbox SET status=?, attempts=?, next_attempt=?, lease_token=NULL, lease_until=0
+                        WHERE site=? AND ref=? AND status='pending' AND lease_token=?""",
+                               (state, attempts, time.time() + delay, site, ref, lease))
 
 
 class PhotoSyncService:

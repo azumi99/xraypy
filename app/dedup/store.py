@@ -95,6 +95,18 @@ class IdentityStore(ABC):
         """Fetch parcel display metadata in the current warehouse."""
 
     @abstractmethod
+    async def photo_reference_exists(self, ref: str) -> bool:
+        """Check whether a photo reference belongs to the current warehouse."""
+
+    @abstractmethod
+    async def photo_references_existing(self, refs: list[str]) -> set[str]:
+        """Find referenced photos in the current warehouse using a single query."""
+
+    @abstractmethod
+    async def list_photo_references(self) -> list[str]:
+        """List photo references in the current warehouse for recovery."""
+
+    @abstractmethod
     async def find_similar(
         self,
         embedding: np.ndarray,
