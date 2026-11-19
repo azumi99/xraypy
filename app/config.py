@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 EmbeddingModelName = Literal["resnet18", "resnet50", "dinov2_small", "dinov2_base"]
@@ -73,6 +73,8 @@ class CaptureConfig(BaseModel):
     # (lapangan: tampak atas & samping masing-masing dari 1 kamera HDMI capture)
     top_source: str = "screen"
     side_source: str = "screen"
+    # Minimum distance of the top bounding box from the incoming frame edge.
+    top_capture_left_margin: float = Field(default=0.10, ge=0, lt=0.5, allow_inf_nan=False)
     # Side capture time minus top capture time, in seconds; calibrate per installation.
     pairing_side_delay_s: float = Field(default=0.0, allow_inf_nan=False)
     pairing_max_skew_s: float = Field(default=0.5, gt=0, allow_inf_nan=False)
@@ -115,8 +117,35 @@ class StripConfigModel(BaseModel):
 PipelineMode = Literal["strip", "track"]
 
 
+class TrackRoiConfig(BaseModel):
+    top_start: float = Field(default=0.03, ge=0, le=1, allow_inf_nan=False)
+    top_end: float = Field(default=0.86, ge=0, le=1, allow_inf_nan=False)
+    side_start: float = Field(default=0.55, ge=0, le=1, allow_inf_nan=False)
+    side_end: float = Field(default=0.90, ge=0, le=1, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def validate_bounds(self):
+        if self.top_start >= self.top_end or self.side_start >= self.side_end:
+            raise ValueError("track ROI start must be less than end")
+        return self
+
+
 class DetectorConfig(BaseModel):
     backend: DetectorBackend = "motion"
+    merge_diagnostics: bool = False
+    reference_top: Path | None = None
+    reference_side: Path | None = None
+    side_reference_merge: bool = False
+    top_reference_merge: bool = False
+    reference_weak_delta: int = Field(default=6, ge=1, le=254)
+    reference_strong_delta: int = Field(default=18, ge=2, le=255)
+
+    @model_validator(mode="after")
+    def validate_reference_deltas(self):
+        if self.reference_weak_delta >= self.reference_strong_delta:
+            raise ValueError("reference weak delta must be less than strong delta")
+        return self
+
     # yolo backend — YOLO26-seg (terbaru) + ByteTrack. Untuk produksi X-ray,
     # fine-tune model parcel lalu set weights + classes, mis:
     #   CV_DETECTOR__WEIGHTS=parcel_yolo12s.pt  CV_DETECTOR__CLASSES=parcel
@@ -134,7 +163,7 @@ class DetectorConfig(BaseModel):
     # tracker
     finalize_missed_frames: int = 12
     min_crop_side_px: int = 32
-    # Optional exclusive bottom of the scanner image, as a fraction of frame height.
+    # Optional exclusive bottom as a fraction of the detector input (track ROI).
     viewport_bottom: float | None = Field(default=None, gt=0, le=1)
 
 
@@ -188,6 +217,7 @@ class Settings(BaseSettings):
     capture: CaptureConfig = Field(default_factory=CaptureConfig)
     strip: StripConfigModel = Field(default_factory=StripConfigModel)
     pipeline_mode: PipelineMode = "strip"  # strip (default) | track (YOLO/ByteTrack alt.)
+    track_roi: TrackRoiConfig = Field(default_factory=TrackRoiConfig)
     detector: DetectorConfig = Field(default_factory=DetectorConfig)
     awb: AwbConfig = Field(default_factory=AwbConfig)
 

@@ -206,6 +206,7 @@ class Pipeline:
         self._annotated: np.ndarray | None = None
         self._annotated_side: np.ndarray | None = None
         self._annotated_source: np.ndarray | None = None  # raw frame utk crop (track mode)
+        self._track_references: dict[str, np.ndarray | None] = {}
         self._track_states: dict[int, dict] = {}  # track_id -> {hits, captured}
         self._side_track_states: dict[int, dict] = {}
         self._pending_top = deque()
@@ -531,8 +532,34 @@ class Pipeline:
         )
 
     # -- track mode (YOLO / motion backend) ------------------------------------
+    def _track_roi_rows(self, h: int, view: str) -> tuple[int, int]:
+        cfg = self._settings.track_roi
+        start, end = (cfg.top_start, cfg.top_end) if view == "top" else (cfg.side_start, cfg.side_end)
+        y0 = min(h - 1, int(h * start))
+        y1 = max(y0 + 1, min(h, int(h * end)))
+        return y0, y1
+
+    def _track_roi(self, frame: np.ndarray, view: str) -> np.ndarray:
+        y0, y1 = self._track_roi_rows(frame.shape[0], view)
+        return frame[y0:y1, :]
+
+    def _track_reference_delta(self, frame: np.ndarray, view: str, full_shape: tuple[int, ...]) -> np.ndarray | None:
+        cfg = self._settings.detector
+        path = cfg.reference_top if view == "top" else cfg.reference_side
+        if path is None:
+            return None
+        if view not in self._track_references:
+            self._track_references[view] = cv2.imread(str(path), cv2.IMREAD_COLOR)
+        reference = self._track_references[view]
+        if reference is None or reference.shape != full_shape:
+            return None
+        reference_roi = self._track_roi(reference, view)
+        if reference_roi.shape != frame.shape or reference_roi.dtype != frame.dtype:
+            return None
+        return cv2.absdiff(frame, reference_roi).max(axis=2)
+
     async def _process_track_frame(self, frames: dict[str, np.ndarray]) -> None:
-        from .detector import ParcelTracker, make_detector
+        from .detector import ParcelDetection, ParcelTracker, make_detector
 
         captured_at = time.monotonic()
         batch_id = self.session.batch_id
@@ -544,9 +571,17 @@ class Pipeline:
             if side is not None:
                 await self._process_side_track_frame(side, captured_at, batch_id)
             return
+        full_top = top
+        top_shape = full_top.shape
+        top_y0, top_y1 = self._track_roi_rows(top_shape[0], "top")
+        top = full_top[top_y0:top_y1]
         if not hasattr(self, "_detector"):
             self._detector = ParcelTracker(self._settings.detector, make_detector(self._settings.detector))
-        parcels = await asyncio.to_thread(self._detector.process, top)
+        delta = self._track_reference_delta(top, "top", top_shape)
+        if self._settings.detector.top_reference_merge and delta is not None:
+            parcels = await asyncio.to_thread(self._detector.process, top, reference_delta=delta)
+        else:
+            parcels = await asyncio.to_thread(self._detector.process, top)
         self._annotated_source = top
 
         # live tracking overlays + auto-capture: parcel masuk dari kiri,
@@ -558,16 +593,17 @@ class Pipeline:
         seen: set[int] = set()
         for det in parcels:
             seen.add(det.parcel_id)
+            if not getattr(det, "observed", True):
+                continue
             st = self._track_states.setdefault(
-                det.parcel_id, {"hits": 0, "captured": False, "capturing": False, "entered": False, "cx0": None, "misses": 0}
+                det.parcel_id, {"hits": 0, "captured": False, "capturing": False, "entered": False, "entry_x": None, "misses": 0}
             )
             st["hits"] += 1
             st["misses"] = 0
             x1, y1, x2, y2 = det.bbox
-            cx = (x1 + x2) / 2.0
-            if st["cx0"] is None:
+            if st["entry_x"] is None:
                 st["entered"] = x1 <= entry_zone
-                st["cx0"] = cx
+                st["entry_x"] = x1
             ov = self.overlays.get(det.parcel_id)
             if ov is None:
                 self.overlays[det.parcel_id] = ParcelOverlay(
@@ -578,14 +614,17 @@ class Pipeline:
                 ov.conf = det.conf
             # full muncul: kiri sudah jelas dari tepi + objek bergerak ke kanan
             # sejak pertama teramati + track stabil
-            fully_out = (x1 >= W * 32 / 640 and y1 >= H * 6 / 360
-                         and x2 <= W - W * 6 / 640 and y2 <= H * 0.86 + 1)
+            crop_pad = round((x2 - x1) * 0.15)
+            fully_out = (x1 >= max(W * self._settings.capture.top_capture_left_margin, crop_pad)
+                         and x1 > st["entry_x"] and y1 >= H * 6 / 360
+                         and x2 <= W - W * 6 / 640 and y2 < H - 1)
             if st["hits"] >= min_hits and not st["captured"] and st["entered"] and fully_out:
                 st["captured"] = True
                 st["capturing"] = True
                 slot = {"batch_id": batch_id, "seq": det.parcel_id, "decision": None, "side": None, "time": captured_at, "captured_at": datetime.now().astimezone()}
                 self._queue_track_capture(self._pending_top, slot)
-                asyncio.create_task(self._capture_with_effect(det, top.copy(), slot, batch_id, st))
+                capture_det = ParcelDetection(det.parcel_id, (x1, y1 + top_y0, x2, y2 + top_y0), det.conf)
+                asyncio.create_task(self._capture_with_effect(capture_det, full_top.copy(), slot, batch_id, st))
             self.overlays[det.parcel_id].capturing = st["capturing"]
         for tid in list(self._track_states):
             if tid not in seen:
@@ -595,7 +634,7 @@ class Pipeline:
         for tid in list(self.overlays):
             if tid not in seen:
                 del self.overlays[tid]
-        self._annotate_track(top)
+        self._annotate_track(top, delta=delta)
         # The side view has its own tracker and coordinate system.
         if side is not None:
             await self._process_side_track_frame(side, captured_at, batch_id)
@@ -608,9 +647,15 @@ class Pipeline:
         if captured_at is None:
             captured_at = time.monotonic()
             batch_id = self.session.batch_id
+        full_side = side
+        side = self._track_roi(full_side, "side")
         if not hasattr(self, "_side_detector"):
             self._side_detector = ParcelTracker(self._settings.detector, make_detector(self._settings.detector), side=True)
-        parcels = await asyncio.to_thread(self._side_detector.process, side)
+        delta = self._track_reference_delta(side, "side", full_side.shape)
+        if self._settings.detector.side_reference_merge and delta is not None:
+            parcels = await asyncio.to_thread(self._side_detector.process, side, reference_delta=delta)
+        else:
+            parcels = await asyncio.to_thread(self._side_detector.process, side)
         h, w = side.shape[:2]
         seen = set()
         overlays = []
@@ -627,7 +672,7 @@ class Pipeline:
             if st["entered"] is None:
                 st["entered"] = x1 <= w * 0.30
             fully_out = (x1 >= w * 32 / 640 and y1 >= h * 6 / 360
-                         and x2 <= w - w * 6 / 640 and y2 <= h * 0.86 + 1)
+                         and x2 <= w - w * 6 / 640 and y2 < h - 1)
             capturing = st["hits"] >= 2 and not st["captured"] and st["entered"] and fully_out
             if capturing:
                 st["captured"] = True
@@ -643,7 +688,8 @@ class Pipeline:
                 self._side_track_states[tid]["misses"] += 1
                 if self._side_track_states[tid]["misses"] > 15:
                     del self._side_track_states[tid]
-        self._annotated_side = self._annotate_track(side, overlays)
+        self._annotated_side = full_side.copy()
+        self._track_roi(self._annotated_side, "side")[:] = self._annotate_track(side, overlays, delta=delta)
 
     def _queue_track_capture(self, queue: deque, capture: dict) -> None:
         # ponytail: bounded global per-pipeline queues; increase capacity if measured throughput requires it.
@@ -750,8 +796,7 @@ class Pipeline:
             state["capturing"] = False
 
     async def _handle_track_parcel(self, det, frame, side, batch_id) -> None:
-        """Crop BERSIH dari kotak parcel (latar dibuang via kontur Otsu) ->
-        dedup + AWB."""
+        """Crop original pixels around the parcel, then run dedup and AWB pairing."""
         batch_id = batch_id or "no-batch"
         x1, y1, x2, y2 = det.bbox
         px, py = round((x2 - x1) * 0.15), round((y2 - y1) * 0.15)
@@ -796,13 +841,22 @@ class Pipeline:
             self.session.parcel_count += 1
             await self._apply_decision(det.parcel_id, decision, batch_id)
 
-    def _annotate_track(self, frame: np.ndarray, overlays=None) -> np.ndarray:
+    def _annotate_track(self, frame: np.ndarray, overlays=None, *, delta: np.ndarray | None = None) -> np.ndarray:
         annotated = frame.copy()
+        cfg = self._settings.detector
+        if delta is not None:
+            weak = (delta >= cfg.reference_weak_delta) & (delta < cfg.reference_strong_delta)
+            strong = delta >= cfg.reference_strong_delta
+            annotated[weak] = (annotated[weak].astype(np.uint16) + (0, 255, 255)) // 2
+            annotated[strong] = (annotated[strong].astype(np.uint16) + (255, 0, 255)) // 2
+            self._label_chip(annotated, "REF: WEAK YELLOW / STRONG MAGENTA", 4, 0, (90, 0, 90))
+        elif (cfg.reference_top if overlays is None else cfg.reference_side) is not None:
+            self._label_chip(annotated, "REF: INVALID OR SIZE MISMATCH", 4, 0, (0, 0, 165))
         for ov in self.overlays.values() if overlays is None else overlays:
             color = ((80, 255, 80) if int(time.monotonic() * 8) % 2 else (30, 160, 30)) if ov.capturing else STATUS_COLORS["tracking"]
             x1, x2 = int(ov.x1), int(ov.x2)
             y1, y2 = max(0, int(ov.y1) - 2), int(ov.y2) + 2
-            cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 3)
+            cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 1)
             if ov.status == "tracking":
                 conf = f" {ov.conf * 100:.0f}%" if ov.conf else ""
                 label = f"#{ov.seq} PARCEL{conf}"
@@ -844,7 +898,7 @@ class Pipeline:
             x1, x2 = int(ov.x1), int(ov.x2)
             y1 = max(0, int(ov.y1) - 2)
             y2 = min(h - 1, int(ov.y2) + 2)
-            cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
+            cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 1)
             label = f"#{ov.seq}"
             if ov.idx is not None:
                 label += f" idx={ov.idx}"
@@ -873,7 +927,7 @@ class Pipeline:
             for ov in self.overlays.values():
                 color = STATUS_COLORS.get(ov.status, (200, 200, 200))
                 x1, x2 = int(ov.x1), int(ov.x2)
-                cv2.rectangle(side_annotated, (x1, 0), (x2, sh - 1), color, 2)
+                cv2.rectangle(side_annotated, (x1, 0), (x2, sh - 1), color, 1)
                 if ov.idx is not None:
                     cv2.putText(
                         side_annotated,

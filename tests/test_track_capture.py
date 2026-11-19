@@ -42,6 +42,41 @@ def test_track_survives_missed_frame_and_captures_once(tmp_path):
     asyncio.run(run())
 
 
+def test_held_top_box_does_not_trigger_capture(tmp_path):
+    async def run():
+        pipeline = Pipeline(Settings(crop_dir=tmp_path), MagicMock(), MagicMock(), MagicMock())
+        detections = iter([
+            [SimpleNamespace(parcel_id=1, bbox=(30, 10, 80, 40), conf=0.9, observed=True)],
+            [SimpleNamespace(parcel_id=1, bbox=(30, 10, 80, 40), conf=0.9, observed=False)],
+        ])
+        pipeline._detector = SimpleNamespace(process=lambda _: next(detections))
+        frame = np.zeros((100, 200, 3), dtype=np.uint8)
+        await pipeline._process_track_frame({"top": frame})
+        await pipeline._process_track_frame({"top": frame})
+        assert 1 in pipeline.overlays
+        assert pipeline._track_states[1]["hits"] == 1
+        assert not pipeline._pending_top
+
+    asyncio.run(run())
+
+
+async def test_top_capture_waits_for_left_clearance(tmp_path):
+    pipeline = Pipeline(Settings(_env_file=None, crop_dir=tmp_path), MagicMock(), MagicMock(), MagicMock())
+    pipeline.session.batch_id = "test"
+    frame = np.zeros((100, 400, 3), dtype=np.uint8)
+    boxes = iter([(0, 10, 60, 70), (25, 10, 105, 70), (40, 10, 140, 70), (60, 10, 160, 70)])
+    pipeline._detector = SimpleNamespace(process=lambda _: [SimpleNamespace(parcel_id=1, bbox=next(boxes), conf=0.9)])
+    pipeline._capture_with_effect = AsyncMock()
+    for _ in range(2):
+        await pipeline._process_track_frame({"top": frame})
+        assert not pipeline._pending_top
+    for _ in range(2):
+        await pipeline._process_track_frame({"top": frame})
+    await asyncio.sleep(0)
+    pipeline._capture_with_effect.assert_awaited_once()
+    assert pipeline._capture_with_effect.await_args.args[0].bbox == (40, 13, 140, 73)
+
+
 def test_blob_assist_detects_parcel_without_detecting_control_panel():
     backend = SimpleNamespace(process=lambda _: [], reset=lambda: None)
     tracker = ParcelTracker(Settings().detector, backend)
@@ -59,12 +94,12 @@ def test_side_box_uses_its_own_detection(tmp_path):
     async def run():
         pipeline = Pipeline(Settings(crop_dir=tmp_path), MagicMock(), MagicMock(), MagicMock())
         pipeline._detector = SimpleNamespace(process=lambda _: [])
-        parcel = SimpleNamespace(parcel_id=3, bbox=(40, 30, 100, 70), conf=0.9)
+        parcel = SimpleNamespace(parcel_id=3, bbox=(40, 10, 100, 25), conf=0.9)
         pipeline._side_detector = SimpleNamespace(process=lambda _: [parcel])
         frame = np.zeros((100, 200, 3), dtype=np.uint8)
         await pipeline._process_track_frame({"top": frame, "side": frame})
-        assert pipeline._annotated_side[30, 40].any()
-        assert not pipeline._annotated_side[90, 40].any()
+        assert pipeline._annotated_side.shape == frame.shape
+        assert pipeline._annotated_side[65, 40].any()
 
     asyncio.run(run())
 
@@ -112,7 +147,7 @@ def test_independent_side_pairing_and_color_crops(tmp_path, monkeypatch):
             return SimpleNamespace(record=SimpleNamespace(id=i, batch_id="batch", track_id=i, crop_ref=kwargs["crop_ref"], awb_id=i), awb=awb)
 
         dedup.process_parcel = process_parcel
-        pipeline = Pipeline(Settings(crop_dir=tmp_path), dedup, MagicMock(), MagicMock())
+        pipeline = Pipeline(Settings(crop_dir=tmp_path, track_roi={"top_start": 0, "top_end": 1, "side_start": 0, "side_end": 1}), dedup, MagicMock(), MagicMock())
         pipeline.session.batch_id = "batch"
         pipeline._apply_decision = AsyncMock()
         top = np.zeros((100, 400, 3), dtype=np.uint8)

@@ -14,7 +14,9 @@ Two backends behind one interface:
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
+from itertools import groupby
 
 import cv2
 import numpy as np
@@ -226,7 +228,7 @@ def make_detector(cfg: DetectorConfig) -> DetectorBackend:
 #
 # Pada citra X-ray, model umum mendeteksi isi paket (benda di dalam) sebagai
 # objek terpisah. ParcelTracker membungkusnya menjadi kotak parcel utuh:
-# 1. deteksi yang berdekatan/overlap di-kluster -> satu parcel
+# 1. deteksi yang sangat overlap di-kluster -> satu parcel
 # 2. tiap sisi kotak di-snap ke tepi paket (garis gradien terkuat, Scharr)
 # 3. tracking (IoU) + id stabil dilakukan di level parcel
 # ---------------------------------------------------------------------------
@@ -240,44 +242,280 @@ class ParcelDetection:
     observed: bool = True
 
 
-def _boxes_overlap_or_near(
-    a: tuple[int, int, int, int], b: tuple[int, int, int, int], gap: int
-) -> bool:
-    ax1, ay1, ax2, ay2 = a
-    bx1, by1, bx2, by2 = b
-    return (
-        ax1 - gap <= bx2 and bx1 - gap <= ax2 and ay1 - gap <= by2 and by1 - gap <= ay2
-    )
+def _mostly_contained(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> bool:
+    intersection = max(0, min(a[2], b[2]) - max(a[0], b[0])) * max(0, min(a[3], b[3]) - max(a[1], b[1]))
+    area = (a[2] - a[0]) * (a[3] - a[1])
+    return area > 0 and intersection >= 0.9 * area
 
 
-def cluster_boxes(
-    boxes: list[tuple[int, int, int, int]], gap: int
+def cluster_boxes(boxes: list[tuple[int, int, int, int]]) -> list[tuple[int, int, int, int]]:
+    """Group duplicates against a real outer box, never a transitive union."""
+    remaining = sorted(boxes, key=lambda b: (-(b[2] - b[0]) * (b[3] - b[1]), b))
+    result = []
+    while remaining:
+        anchor = remaining.pop(0)
+        group = [anchor]
+        rest = []
+        for box in remaining:
+            if _iou(*anchor, *box) >= 0.8 or _mostly_contained(box, anchor):
+                group.append(box)
+            else:
+                rest.append(box)
+        result.append((min(b[0] for b in group), min(b[1] for b in group),
+                       max(b[2] for b in group), max(b[3] for b in group)))
+        remaining = rest
+    return result
+
+
+def _merge_bottom_fragments(boxes: list[tuple[int, int, int, int]], height: int,
+                            *, side: bool = False, diagnostic_view: str | None = None) -> list[tuple[int, int, int, int]]:
+    """Join only a single thin base to a single, substantially taller parent."""
+    candidates = []
+    for i, fragment in enumerate(boxes):
+        fw, fh = fragment[2] - fragment[0], fragment[3] - fragment[1]
+        if fh > 0.25 * fw:
+            continue
+        for j, parent in enumerate(boxes):
+            if i == j:
+                continue
+            pw, ph = parent[2] - parent[0], parent[3] - parent[1]
+            overlap = min(fragment[2], parent[2]) - max(fragment[0], parent[0])
+            dy = fragment[1] - parent[3]
+            if fh > 0.25 * ph or dy * 360 > 6 * height or fragment[3] <= parent[3]:
+                continue
+            aligned = overlap >= 0.8 * fw and overlap >= 0.5 * pw and dy >= -min(fh, 0.15 * ph)
+            # A side-view base may overhang slightly; keep the parent's horizontal bounds.
+            overhang = side and fw > pw and overlap >= 0.75 * fw and overlap >= 0.9 * pw and dy >= -fh
+            if aligned or overhang:
+                candidates.append((i, j, overhang))
+    counts = [sum(k in (i, j) for i, j, _ in candidates) for k in range(len(boxes))]
+    used = set()
+    result = []
+    for i, j, overhang in candidates:
+        if counts[i] != 1 or counts[j] != 1:
+            continue
+        a, b = boxes[i], boxes[j]
+        result.append((b[0], b[1], b[2], a[3]) if overhang else
+                      (min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3])))
+        used.update((i, j))
+        if diagnostic_view is not None:
+            logger.info("bottom_fragment_merge view=%s normalized_gap=%.2f clipped_overhang=%s",
+                        diagnostic_view, (a[1] - b[3]) * 360 / height, overhang)
+    return result + [box for i, box in enumerate(boxes) if i not in used]
+
+
+def _merge_adjacent_boxes(boxes: list[tuple[int, int, int, int]], gray: np.ndarray,
+                          threshold: float, *, diagnostic_view: str | None = None,
+                          recent_unions: tuple[tuple[int, int, int, int], ...] = (),
+                          confirmed_unions: list[tuple[int, int, int, int]] | None = None) -> list[tuple[int, int, int, int]]:
+    """Merge unambiguous horizontally adjacent, vertically aligned similar boxes.
+
+    Distinct touching packages can satisfy this geometry and merge incorrectly.
+    """
+    h, w = gray.shape
+    normalized = [(x1 * 640 / w, y1 * 360 / h, x2 * 640 / w, y2 * 360 / h)
+                  for x1, y1, x2, y2 in boxes]
+    candidates: list[tuple[int, int]] = []
+    carried: set[tuple[int, int]] = set()
+    diagnostics = []
+    for i, a in enumerate(normalized):
+        for j in range(i + 1, len(boxes)):
+            b = normalized[j]
+            details = [] if diagnostic_view is not None and len(diagnostics) < 20 else None
+            for axis in (0,):
+                cross = 1 - axis
+                first, second = sorted((a, b), key=lambda box: box[axis])
+                gap = second[axis] - first[axis + 2]
+                overlap = min(a[cross + 2], b[cross + 2]) - max(a[cross], b[cross])
+                cross_sizes = (a[cross + 2] - a[cross], b[cross + 2] - b[cross])
+                sizes = (a[axis + 2] - a[axis], b[axis + 2] - b[axis])
+                similar_width = min(sizes) >= 0.5 * max(sizes)
+                strict = abs(gap) <= 6 and overlap >= 0.75 * max(cross_sizes) and similar_width
+                stable = False
+                if not strict and recent_unions and abs(gap) <= 12 and similar_width and overlap >= 0.65 * max(cross_sizes):
+                    p, q = boxes[i], boxes[j]
+                    union = (min(p[0], q[0]), min(p[1], q[1]), max(p[2], q[2]), max(p[3], q[3]))
+                    stable = (any(_iou(*union, *previous) >= 0.8 for previous in recent_unions)
+                              and not any(k not in (i, j) and _iou(*union, *box) > 0
+                                          for k, box in enumerate(boxes)))
+                if not (strict or stable):
+                    if details is not None:
+                        reasons = []
+                        if not -6 <= gap <= 6:
+                            reasons.append("gap")
+                        if not overlap >= 0.75 * max(cross_sizes):
+                            reasons.append("cross_overlap")
+                        if not min(sizes) >= 0.5 * max(sizes):
+                            reasons.append("size_ratio")
+                        details.append(f"{'xy'[axis]}:geometry({','.join(reasons)})")
+                    continue
+                candidates.append((i, j))
+                if stable:
+                    carried.add((i, j))
+                if details is not None:
+                    # Observation only: seam brightness does not affect merging.
+                    scale = (w / 640, h / 360)
+                    lo = int((max(a[cross], b[cross]) + 0.2 * overlap) * scale[cross])
+                    hi = int((min(a[cross + 2], b[cross + 2]) - 0.2 * overlap) * scale[cross])
+                    start = max(0, int((first[axis + 2] - 2) * scale[axis]))
+                    end = min(w, int(np.ceil((second[axis] + 2) * scale[axis])) + 1)
+                    seam = gray[lo:hi, start:end]
+                    dark_ratio = np.mean(seam < threshold) if seam.size else None
+                    details.append(f"{'xy'[axis]}:dark_ratio={float(dark_ratio):.4f}" if dark_ratio is not None else f"{'xy'[axis]}:empty_seam")
+                break
+            if details is not None:
+                diagnostics.append((i, j, details, dark_ratio if details and ':dark_ratio=' in details[-1] else None))
+    # Ambiguous neighbors are left separate rather than forming transitive chains.
+    counts = [sum(i in pair for pair in candidates) for i in range(len(boxes))]
+    for i, j, details, dark_ratio in diagnostics:
+        a, b = boxes[i], boxes[j]
+        na, nb = normalized[i], normalized[j]
+        xgap = max(na[0], nb[0]) - min(na[2], nb[2])
+        ygap = max(na[1], nb[1]) - min(na[3], nb[3])
+        vertical_overlap = max(0, min(na[3], nb[3]) - max(na[1], nb[1]))
+        union = (max(a[2], b[2]) - min(a[0], b[0]), max(a[3], b[3]) - min(a[1], b[1]))
+        if (i, j) in candidates:
+            decision = "SKIP:ambiguous_neighbors"
+            if counts[i] == counts[j] == 1:
+                decision = "MERGE:recent_union" if (i, j) in carried else "MERGE"
+        else:
+            decision = "SKIP:geometry"
+        logger.info(
+            "merge_diagnostic view=%s resolution=%sx%s boxes=%s,%s normalized_x_gap=%.2f "
+            "normalized_y_gap=%.2f normalized_vertical_overlap=%.2f dark_ratio=%s "
+            "threshold=%.2f dino_similarity=unavailable union_px=%s decision=%s checks=%s",
+            diagnostic_view, w, h, a, b, xgap, ygap, vertical_overlap,
+            f"{dark_ratio:.4f}" if dark_ratio is not None else "unavailable", threshold,
+            union, decision, ";".join(details),
+        )
+    used: set[int] = set()
+    result = []
+    for i, j in candidates:
+        if counts[i] == counts[j] == 1:
+            a, b = boxes[i], boxes[j]
+            union = (min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3]))
+            result.append(union)
+            if confirmed_unions is not None and (i, j) not in carried:
+                confirmed_unions.append(union)
+            used.update((i, j))
+    return result + [box for i, box in enumerate(boxes) if i not in used]
+
+
+def _merge_reference_fragments(
+    boxes: list[tuple[int, int, int, int]], delta: np.ndarray, weak: int, strong: int,
+    *, side: bool = True, diagnostic_view: str | None = None,
 ) -> list[tuple[int, int, int, int]]:
-    """Union-find: kotak yang berdekatan/overlap digabung jadi satu kotak union."""
-    n = len(boxes)
-    parent = list(range(n))
+    """Join isolated fragments only across a broad above-base reference bridge."""
+    h, w = delta.shape
+    candidates = []
+    counts = [0] * len(boxes)
+    # ponytail: pairwise scan over parcel boxes; index by x if crowded frames make this costly.
+    for i, a in enumerate(boxes):
+        for j in range(i + 1, len(boxes)):
+            b = boxes[j]
+            left, right = (a, b) if a[0] < b[0] else (b, a)
+            start, end = left[2] + 1, right[0]
+            gap = end - start
+            narrower = min(a[2] - a[0], b[2] - b[0])
+            if right[2] <= left[2] or not abs(gap) <= min(55 * w / 640, 0.4 * narrower):
+                continue
+            if gap <= 0:
+                if side or abs(gap) > 20 * w / 640:
+                    continue
+                # Sample across the shared boundary, including exact contact.
+                start, end = end - 2, start + 2
+            top, bottom = max(a[1], b[1]), min(a[3], b[3]) + 1
+            overlap = bottom - top
+            ah, bh = a[3] - a[1] + 1, b[3] - b[1] + 1
+            if overlap < max(0.65 * min(ah, bh), 0.5 * max(ah, bh)):
+                continue
+            # Exclude the lowest quarter of the overlap so a floor strip cannot supply the bridge.
+            seam = delta[max(0, top):min(h, top + 3 * overlap // 4), max(0, start):min(w, end)]
+            if seam.size == 0:
+                continue
+            spanning = (seam >= weak).all(axis=1) & ((seam < strong).mean(axis=1) >= 0.5)
+            if not any(ok and sum(1 for _ in run) >= max(4, 0.30 * overlap) for ok, run in groupby(spanning)):
+                continue
+            union = (left[0], min(a[1], b[1]), right[2], max(a[3], b[3]))
+            candidates.append((i, j, union))
+            counts[i] += 1
+            counts[j] += 1
+    merged = {}
+    used = set()
+    for i, j, union in candidates:
+        if counts[i] != 1 or counts[j] != 1:
+            continue
+        if any(k not in (i, j) and _iou(*box, *union) > 0 for k, box in enumerate(boxes)):
+            continue
+        merged[i] = union
+        used.add(j)
+        if diagnostic_view is not None:
+            logger.info("%s_reference_merge boxes=%s,%s union=%s", diagnostic_view, boxes[i], boxes[j], union)
+    return [merged.get(i, box) for i, box in enumerate(boxes) if i not in used]
 
-    def find(i: int) -> int:
-        while parent[i] != i:
-            parent[i] = parent[parent[i]]
-            i = parent[i]
-        return i
 
-    for i in range(n):
-        for j in range(i + 1, n):
-            if _boxes_overlap_or_near(boxes[i], boxes[j], gap):
-                parent[find(i)] = find(j)
-    clusters: dict[int, list[int]] = {}
-    for i in range(n):
-        clusters.setdefault(find(i), []).append(i)
-    out = []
-    for idx in clusters.values():
-        xs1 = min(boxes[i][0] for i in idx)
-        ys1 = min(boxes[i][1] for i in idx)
-        xs2 = max(boxes[i][2] for i in idx)
-        ys2 = max(boxes[i][3] for i in idx)
-        out.append((xs1, ys1, xs2, ys2))
-    return out
+def _wrapper_box(frame: np.ndarray, left: tuple[int, int, int, int],
+                 right: tuple[int, int, int, int], weak: int) -> tuple[int, int, int, int] | None:
+    h, w = frame.shape[:2]
+    x1, y1 = left[0], min(left[1], right[1])
+    x2, y2 = right[2], max(left[3], right[3])
+    padx, pady = max(6, round(24 * w / 640)), max(6, round(24 * h / 360))
+    x0, y0 = max(0, x1 - padx), max(0, y1 - pady)
+    if x0 >= x1 or y0 >= y1 or x2 >= w - 1 or y2 >= h - 1:
+        return None
+    patch = frame[y0:y2 + pady + 1, x0:x2 + padx + 1].astype(np.int16)
+    border = np.concatenate((patch[0], patch[-1], patch[:, 0], patch[:, -1]))
+    background = np.median(border, axis=0)
+    if np.percentile(np.abs(border - background).max(axis=1), 90) >= weak:
+        return None
+    mask = ((background - patch).max(axis=2) >= weak).astype(np.uint8)
+    # Opening removes thin bridges without closing the gap between separate parcels.
+    k = max(3, round(5 * w / 640) | 1)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((k, k), np.uint8))
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    for contour in contours:
+        x, y, bw, bh = cv2.boundingRect(contour)
+        if x == 0 or y == 0 or x + bw == patch.shape[1] or y + bh == patch.shape[0]:
+            continue
+        outer = (x + x0, y + y0, x + x0 + bw - 1, y + y0 + bh - 1)
+        if not (outer[0] < x1 and outer[1] < y1 and outer[2] > x2 and outer[3] > y2):
+            continue
+        if all(cv2.pointPolygonTest(contour, ((a + c) / 2 - x0, (b + d) / 2 - y0), False) > 0
+               for a, b, c, d in (left, right)):
+            return outer
+    return None
+
+
+def _merge_wrappers(boxes: list[tuple[int, int, int, int]], frame: np.ndarray, weak: int,
+                    *, diagnostic_view: str | None = None) -> list[tuple[int, int, int, int]]:
+    w = frame.shape[1]
+    proposals = []
+    counts = [0] * len(boxes)
+    for i, a in enumerate(boxes):
+        for j in range(i + 1, len(boxes)):
+            left, right = sorted((a, boxes[j]), key=lambda box: box[0])
+            if left[0] == right[0] or right[2] <= left[2]:
+                continue
+            gap = right[0] - left[2]
+            if abs(gap) > min(40 * w / 640, 0.35 * min(left[2] - left[0], right[2] - right[0])):
+                continue
+            overlap = min(left[3], right[3]) - max(left[1], right[1])
+            if overlap < 0.6 * max(left[3] - left[1], right[3] - right[1]):
+                continue
+            outer = _wrapper_box(frame, left, right, weak)
+            if outer is None or any(k not in (i, j) and _iou(*outer, *box) > 0 for k, box in enumerate(boxes)):
+                continue
+            proposals.append((i, j, outer))
+            counts[i] += 1
+            counts[j] += 1
+    merged, used = {}, set()
+    for i, j, outer in proposals:
+        if counts[i] == counts[j] == 1:
+            merged[i] = outer
+            used.add(j)
+            if diagnostic_view is not None:
+                logger.info("%s_wrapper_merge boxes=%s,%s outer=%s", diagnostic_view, boxes[i], boxes[j], outer)
+    return [merged.get(i, box) for i, box in enumerate(boxes) if i not in used]
 
 
 def _snap_profile(strip: np.ndarray, min_ratio: float = 2.0) -> int | None:
@@ -360,30 +598,31 @@ class ParcelTracker:
         self._side = side
         self._tracks: dict[int, dict] = {}
         self._next_pid = 1
+        self._merge_diagnostic_at = float("-inf")
+        self._recent_top_unions: list[tuple[tuple[int, int, int, int], ...]] = []
 
     def reset(self) -> None:
         self._tracks.clear()
+        self._recent_top_unions.clear()
         self._next_pid = 1
         self._backend.reset()
 
-    def process(self, frame_bgr: np.ndarray) -> list[ParcelDetection]:
+    def process(self, frame_bgr: np.ndarray, *, reference_delta: np.ndarray | None = None) -> list[ParcelDetection]:
         dets = self._backend.process(frame_bgr)
         if self._side:
             dets = [d for d in dets if getattr(d, "observed", True)]
         h, w = frame_bgr.shape[:2]
         bottom_limit = max(1, int(h * self._cfg.viewport_bottom)) if self._cfg.viewport_bottom is not None else h
-        gap = max(12, int(w * 0.04))
         gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
         boxes = [(x1, y1, x2, min(y2, bottom_limit - 1))
                  for d in dets for x1, y1, x2, y2 in [d.bbox]
                  if y1 < bottom_limit and x2 > x1 and min(y2, bottom_limit - 1) > y1]
         # Reference scanner uses a bright belt: assist COCO YOLO with dark blobs.
         small = cv2.resize(gray, (640, 360))
-        small = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8)).apply(small)
         band = small[3:14]
         mean, std = float(band.mean()), float(band.std())
         bg = float(np.percentile(small, 90)) if mean < 140 or std > 28 else mean
-        threshold = np.clip(round(bg - max(14, 12 + std * 2)), 20, 235)
+        threshold = max(20, round(bg - max(14, 12 + std * 2)))
         mask = (small < threshold).astype(np.uint8) * 255
         rows = small.mean(axis=1)
         viewport = float(np.percentile(rows, 70))
@@ -395,14 +634,17 @@ class ParcelTracker:
         if bottom - top > 360 * 0.45:
             mask[:top] = 0
             mask[bottom + 1:] = 0
-        mask[min(310, int(bottom_limit * 360 / h)):] = 0
+        mask[int(bottom_limit * 360 / h):] = 0
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         blobs = []
         for contour in contours:
             x, y, bw, bh = cv2.boundingRect(contour)
-            if bw < 45 or bh < 25 or bw * bh < 3000 or bw * bh > 640 * 360 * 0.45:
+            normal = bw >= 45 and bh >= 25 and bw * bh >= 3000
+            thin = (min(bw, bh) >= 8 and max(bw, bh) >= 80 and bw * bh >= 1200
+                    and cv2.contourArea(contour) >= 0.7 * bw * bh)
+            if not (normal or thin) or bw * bh > 640 * 360 * 0.45:
                 continue
             if (x <= 3 or x + bw >= 637) and bh >= 360 * 0.8:
                 continue
@@ -411,15 +653,42 @@ class ParcelTracker:
             def contained(box: tuple[int, int, int, int]) -> bool:
                 return (candidate[0] <= box[0] and candidate[1] <= box[1]
                         and candidate[2] >= box[2] and candidate[3] >= box[3])
-            if not any(_iou(*candidate, *box) > 0.25 and not contained(box) for box in boxes):
+            if not any((_iou(*candidate, *box) > 0.25 or _mostly_contained(candidate, box))
+                       and not contained(box) for box in boxes):
                 blobs.append(candidate)
                 boxes = [box for box in boxes if not contained(box)]
-        framed = blobs + cluster_boxes(boxes, gap)
+        merge_boxes = cluster_boxes(blobs + boxes)
+        diagnostic_view = None
+        if len(merge_boxes) > 1 and self._cfg.merge_diagnostics and logger.isEnabledFor(logging.INFO):
+            now = time.monotonic()
+            if now - self._merge_diagnostic_at >= 5:
+                diagnostic_view = "side" if self._side else "top"
+                self._merge_diagnostic_at = now
+        merge_boxes = _merge_bottom_fragments(merge_boxes, h, side=self._side, diagnostic_view=diagnostic_view)
+        confirmed_unions = []
+        framed = _merge_adjacent_boxes(
+            merge_boxes, gray, threshold, diagnostic_view=diagnostic_view,
+            recent_unions=tuple(box for frame in self._recent_top_unions for box in frame),
+            confirmed_unions=None if self._side else confirmed_unions,
+        )
+        if not self._side:
+            # A carried merge never renews its own two-frame window.
+            self._recent_top_unions = [*self._recent_top_unions[-1:], tuple(confirmed_unions)]
+        reference_merge = self._cfg.side_reference_merge if self._side else self._cfg.top_reference_merge
+        if (reference_merge and len(framed) > 1
+                and reference_delta is not None and reference_delta.shape == (h, w)):
+            framed = _merge_reference_fragments(
+                framed, reference_delta, self._cfg.reference_weak_delta, self._cfg.reference_strong_delta,
+                side=self._side, diagnostic_view=diagnostic_view,
+            )
+        elif (self._cfg.reference_side if self._side else self._cfg.reference_top) is None and len(framed) > 1:
+            framed = _merge_wrappers(framed, frame_bgr[:bottom_limit], self._cfg.reference_weak_delta,
+                                     diagnostic_view=diagnostic_view)
 
         # asosiasi IoU ke track parcel yang ada (greedy)
         matched: dict[int, int] = {}  # pid -> idx box
         used: set[int] = set()
-        for pid, st in self._tracks.items():
+        for pid, st in sorted(self._tracks.items(), key=lambda item: item[1]["misses"]):
             best_i, best_iou = None, 0.25
             for i, fb in enumerate(framed):
                 if i in used:
@@ -450,7 +719,7 @@ class ParcelTracker:
         for pid, st in self._tracks.items():
             if pid not in matched:
                 st["misses"] += 1
-                if self._side and st["misses"] <= 2 and not any(_iou(*st["bbox"], *box) > 0 for box in framed):
+                if st["misses"] <= 2 and not any(_iou(*st["bbox"], *box) > 0 for box in framed):
                     out.append(ParcelDetection(pid, st["bbox"], st["conf"], observed=False))
         self._tracks = {p: s for p, s in self._tracks.items() if s["misses"] <= 15}
         for i, fb in enumerate(framed):
