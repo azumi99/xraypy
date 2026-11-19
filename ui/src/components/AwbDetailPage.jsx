@@ -1,9 +1,18 @@
 import { useEffect, useState } from "react";
 import api, { del } from "../api";
 import { useAwbDisplayStore } from "../store/awbDisplay";
-import { photoRefs, photoSyncPath, photoSyncStatus } from "../photoSync";
+import { photoPath, photoRefs, photoSyncLabel, photoSyncPaths } from "../photoSync";
 
 const photoUrl = (ref) => `/api/sync/photo?ref=${encodeURIComponent(ref)}`;
+
+function PhotoImage({ reference, alt }) {
+  const local = photoPath(reference);
+  const remote = photoUrl(reference);
+  const [src, setSrc] = useState(local);
+  const [failed, setFailed] = useState(false);
+  if (failed) return <div className="awb-scan-empty" role="status">Foto tidak dapat dimuat</div>;
+  return <a className="awb-scan-image" href={src} target="_blank" rel="noreferrer"><img src={src} alt={alt} title="Lihat ukuran penuh" onError={() => { if (src !== remote) setSrc(remote); else setFailed(true); }} /></a>;
+}
 
 /** Halaman detail AWB (route /awb/:id) — foto 2 POV + info parcel + audit. */
 export default function AwbDetailPage({ id, onBack, onChanged }) {
@@ -15,6 +24,7 @@ export default function AwbDetailPage({ id, onBack, onChanged }) {
   const [error, setError] = useState(false);
   const [groupItems, setGroupItems] = useState([]);
   const [syncItems, setSyncItems] = useState({});
+  const [syncEnabled, setSyncEnabled] = useState(null);
   const grouped = useAwbDisplayStore((state) => state.grouped);
 
   const displayedItems = data && !notFound && !error && String(data.id) === String(id)
@@ -26,15 +36,22 @@ export default function AwbDetailPage({ id, onBack, onChanged }) {
     let active = true;
     let inFlight = false;
     setSyncItems({});
+    setSyncEnabled(null);
     if (!refs.length) return () => { active = false; };
     const refresh = async () => {
       if (inFlight) return;
       inFlight = true;
       try {
-        const result = await api(photoSyncPath(refs));
-        if (active) setSyncItems(result?.items ?? {});
+        const queue = photoSyncPaths(refs);
+        const results = [];
+        const worker = async () => { while (queue.length) results.push(await api(queue.shift())); };
+        await Promise.all(Array.from({ length: Math.min(3, queue.length) }, worker));
+        if (active) {
+          setSyncItems(Object.assign({}, ...results.map((result) => result?.items ?? {})));
+          setSyncEnabled(results.every((result) => result?.enabled === true) ? true : results.every((result) => result?.enabled === false) ? false : null);
+        }
       } catch {
-        if (active) setSyncItems({});
+        if (active) { setSyncItems({}); setSyncEnabled(null); }
       } finally {
         inFlight = false;
       }
@@ -141,28 +158,24 @@ export default function AwbDetailPage({ id, onBack, onChanged }) {
             return <div className="awb-scan-group" key={item.id}>
               <div className="awb-scan-group-label"><span>{item.hawb_number || "HAWB tidak tersedia"} | Part {item.part ?? "—"} / Total {item.total ?? "—"}</span><span className="muted">#{item.id}</span></div>
               <div className="awb-scans">
-                {item.label_photo_ref && <div className="awb-scan">
+                {item.label_photo_ref && <div className="awb-scan awb-label-scan">
                   <div className="awb-scan-label"><span>QR</span> Label</div>
-                  <a className="awb-scan-image" href={photoUrl(item.label_photo_ref)} target="_blank" rel="noreferrer"><img src={photoUrl(item.label_photo_ref)} alt={`Foto label hasil scan QR ${item.hawb_number ?? item.id}`} title="Lihat ukuran penuh" /></a>
-                  <div className="muted text-xs">Sync: {photoSyncStatus(syncItems, item.label_photo_ref)}</div>
+                  <PhotoImage key={item.label_photo_ref} reference={item.label_photo_ref} alt={`Foto label hasil scan QR ${item.hawb_number ?? item.id}`} />
+                  <div className="muted text-xs">{photoSyncLabel(syncEnabled, syncItems, item.label_photo_ref)}</div>
                 </div>}
                 <div className="awb-scan">
                   <div className="awb-scan-label"><span>01</span> Tampak Atas</div>
                   {parcel?.crop_ref ? (
-                    <a className="awb-scan-image" href={photoUrl(parcel.crop_ref)} target="_blank" rel="noreferrer">
-                      <img src={photoUrl(parcel.crop_ref)} alt={`X-ray tampak atas ${item.hawb_number ?? item.id}`} title="Lihat ukuran penuh" />
-                    </a>
+                    <PhotoImage key={parcel.crop_ref} reference={parcel.crop_ref} alt={`X-ray tampak atas ${item.hawb_number ?? item.id}`} />
                   ) : <div className="awb-scan-empty">Belum ada foto tampak atas</div>}
-                  {parcel?.crop_ref && <div className="muted text-xs">Sync: {photoSyncStatus(syncItems, parcel.crop_ref)}</div>}
+                  {parcel?.crop_ref && <div className="muted text-xs">{photoSyncLabel(syncEnabled, syncItems, parcel.crop_ref)}</div>}
                 </div>
                 <div className="awb-scan">
                   <div className="awb-scan-label"><span>02</span> Tampak Samping</div>
                   {parcel?.crop_ref_side ? (
-                    <a className="awb-scan-image" href={photoUrl(parcel.crop_ref_side)} target="_blank" rel="noreferrer">
-                      <img src={photoUrl(parcel.crop_ref_side)} alt={`X-ray tampak samping ${item.hawb_number ?? item.id}`} title="Lihat ukuran penuh" />
-                    </a>
+                    <PhotoImage key={parcel.crop_ref_side} reference={parcel.crop_ref_side} alt={`X-ray tampak samping ${item.hawb_number ?? item.id}`} />
                   ) : <div className="awb-scan-empty">Belum ada foto tampak samping</div>}
-                  {parcel?.crop_ref_side && <div className="muted text-xs">Sync: {photoSyncStatus(syncItems, parcel.crop_ref_side)}</div>}
+                  {parcel?.crop_ref_side && <div className="muted text-xs">{photoSyncLabel(syncEnabled, syncItems, parcel.crop_ref_side)}</div>}
                 </div>
               </div>
             </div>;

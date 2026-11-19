@@ -18,18 +18,27 @@ import httpx
 
 logger = logging.getLogger(__name__)
 _FINAL_CHUNK = b"xray-cargo-final\x001"
+_PENDING_CHUNK = b"xray-cargo-pending\x001"
 
 
-def mark_final_png(data: bytes) -> bytes:
+def _mark_png(data: bytes, marker: bytes) -> bytes:
     """Add an internal finalization marker without altering image pixels."""
     if not data.startswith(b"\x89PNG\r\n\x1a\n") or data[-12:-4] != b"\x00\x00\x00\x00IEND":
         raise ValueError("invalid PNG")
-    payload = b"tEXt" + _FINAL_CHUNK
-    chunk = struct.pack(">I", len(_FINAL_CHUNK)) + payload + struct.pack(">I", zlib.crc32(payload))
+    payload = b"tEXt" + marker
+    chunk = struct.pack(">I", len(marker)) + payload + struct.pack(">I", zlib.crc32(payload))
     return data[:-12] + chunk + data[-12:]
 
 
-def is_final_png(data: bytes) -> bool:
+def mark_final_png(data: bytes) -> bytes:
+    return _mark_png(data, _FINAL_CHUNK)
+
+
+def mark_pending_png(data: bytes) -> bytes:
+    return _mark_png(data, _PENDING_CHUNK)
+
+
+def _has_marker(data: bytes, marker: bytes) -> bool:
     if not data.startswith(b"\x89PNG\r\n\x1a\n"):
         return False
     offset = 8
@@ -39,12 +48,20 @@ def is_final_png(data: bytes) -> bool:
         if end > len(data):
             return False
         kind, value = data[offset + 4:offset + 8], data[offset + 8:offset + 8 + size]
-        if kind == b"tEXt" and value == _FINAL_CHUNK:
+        if kind == b"tEXt" and value == marker:
             return struct.unpack_from(">I", data, offset + 8 + size)[0] == zlib.crc32(kind + value)
         if kind == b"IEND":
             return False
         offset = end
     return False
+
+
+def is_final_png(data: bytes) -> bool:
+    return _has_marker(data, _FINAL_CHUNK)
+
+
+def is_pending_png(data: bytes) -> bool:
+    return _has_marker(data, _PENDING_CHUNK) and not is_final_png(data)
 
 class PhotoSync:
     def __init__(self, settings, store=None):
@@ -94,7 +111,8 @@ class PhotoSync:
             raise ValueError("invalid site or photo reference")
         parts = ref.split("/")
         if (len(parts) < 2 or any(p in ("", ".", "..") or "\\" in p or "\0" in p for p in parts)
-                or (parts[0] == "cas") != (site == "cas")):
+                or (site == "cas" and parts[0] != "cas")
+                or (site == "bgd" and parts[0].casefold() == "cas")):
             raise ValueError("invalid site or photo reference")
         return parts
 
@@ -145,7 +163,45 @@ class PhotoSync:
                                  (site, ref)).fetchone()
                 if row:
                     result[ref] = row[0]
+                else:
+                    try:
+                        data = self._read(site, ref)
+                        is_label = ref.startswith("cas/label-photos/" if site == "cas" else "label-photos/")
+                        result[ref] = "unknown" if is_label or is_final_png(data) else "failed"
+                    except (OSError, ValueError):
+                        result[ref] = "unknown"
         return result
+
+    def _recover_pending(self, site, ref, view, awb):
+        import cv2
+        import numpy as np
+
+        from .pipeline import _save_capture
+
+        parts = self._parts(site, ref)
+        directory = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            for part in parts[:-1]:
+                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+                os.close(directory)
+                directory = child
+            fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+            with os.fdopen(fd, "rb") as photo:
+                info = os.fstat(photo.fileno())
+                if not stat.S_ISREG(info.st_mode) or info.st_size > 12 * 1024 * 1024:
+                    raise ValueError("invalid pending photo")
+                data = photo.read(12 * 1024 * 1024 + 1)
+            if is_final_png(data):
+                return
+            if not is_pending_png(data):
+                raise ValueError("photo is not pending")
+            image = cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+            if image is None or len(image.shape) != 3 or image.shape[2] != 4:
+                raise ValueError("invalid pending image")
+            _save_capture(Path(parts[-1]), image, view, awb,
+                          owned=(info.st_dev, info.st_ino), dir_fd=directory)
+        finally:
+            os.close(directory)
 
     async def reconcile(self):
         """Recover DB-referenced photos finalized before an interrupted enqueue."""
@@ -167,8 +223,17 @@ class PhotoSync:
                 try:
                     label_prefix = "cas/label-photos/" if site == "cas" else "label-photos/"
                     is_label = ref.startswith(label_prefix) and ref.lower().endswith((".jpg", ".jpeg", ".png"))
+                    if not is_label:
+                        data = await asyncio.to_thread(self._read, site, ref)
+                        if is_pending_png(data):
+                            token = warehouse_context.set(site)
+                            try:
+                                view, awb = await self.store.photo_recovery_metadata(ref)
+                            finally:
+                                warehouse_context.reset(token)
+                            await asyncio.to_thread(self._recover_pending, site, ref, view, awb)
                     await asyncio.to_thread(self.enqueue, site, ref, not is_label)
-                except (OSError, ValueError):
+                except (OSError, ValueError, NotImplementedError):
                     logger.warning("photo sync recovery skipped an inaccessible or invalid photo")
 
     async def run(self):

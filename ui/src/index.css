@@ -348,6 +348,8 @@
   .awb-scan-group-label { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 12px; font-weight: 700; }
   .awb-scan-group-label > span:first-child { padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg); overflow-wrap: anywhere; }
   .awb-scan { min-width: 0; }
+  .awb-label-scan { grid-column: 1 / -1; }
+  .awb-label-scan .awb-scan-image, .awb-label-scan .awb-scan-empty { max-width: 320px; }
   .awb-scan-label { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; font-size: 12px; font-weight: 700; }
   .awb-scan-label span { color: var(--text-muted); font-size: 10px; letter-spacing: 0.08em; }
   .awb-scan-image, .awb-scan-empty { display: grid; place-items: center; width: 100%; aspect-ratio: 4 / 3; border: 1px solid var(--border); border-radius: 14px; overflow: hidden; background: #0a1015; }

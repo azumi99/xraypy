@@ -1,9 +1,12 @@
+import asyncio
 import hashlib
 import io
 import json
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -11,7 +14,6 @@ from PIL import Image
 
 from app.photo_receiver import MAX_BYTES, router
 from app.warehouse import warehouse_context
-
 
 devices = {"bgd": {"site": "bgd", "token": "b" * 40}, "cas": {"site": "cas", "token": "c" * 40}}
 
@@ -74,8 +76,44 @@ def test_device_scoped_tokens_can_be_revoked_individually(setup):
     assert upload(client, token="b" * 40).status_code == 200
 
 
+async def test_slow_photo_publication_does_not_block_other_requests(tmp_path, monkeypatch):
+    from app import photo_receiver
+
+    app = FastAPI()
+    app.include_router(router)
+    app.state.settings = SimpleNamespace(crop_dir=tmp_path, photo_sync_devices_json=json.dumps(devices))
+    app.state.store = Store()
+    entered, release = threading.Event(), threading.Event()
+
+    def slow_publish(*args):
+        entered.set()
+        if not release.wait(2):
+            raise TimeoutError("test did not release publication")
+        return True
+
+    monkeypatch.setattr(photo_receiver, "_validate_and_publish", slow_publish)
+
+    @app.get("/health")
+    async def health():
+        return {"ok": True}
+
+    data = image("red")
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://test") as client:
+        task = asyncio.create_task(client.put(
+            "/api/sync/photos", headers={"Authorization": "Bearer " + "b" * 40},
+            data={"ref": "batch/a.png", "sha256": hashlib.sha256(data).hexdigest()},
+            files={"file": ("a.png", data, "image/png")},
+        ))
+        try:
+            assert await asyncio.to_thread(entered.wait, 2)
+            assert (await asyncio.wait_for(client.get("/health"), 0.5)).json() == {"ok": True}
+        finally:
+            release.set()
+        assert (await task).status_code == 200
+
+
 @pytest.mark.parametrize("ref,token", [
-    ("cas/batch/a.png", "b" * 40), ("batch/a.png", "c" * 40),
+    ("cas/batch/a.png", "b" * 40), ("CAS/batch/a.png", "b" * 40), ("batch/a.png", "c" * 40),
     ("../a.png", "b" * 40), ("/a.png", "b" * 40),
     ("a/../b.png", "b" * 40), ("a\\b.png", "b" * 40),
     ("a//b.png", "b" * 40),

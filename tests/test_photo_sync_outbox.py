@@ -64,7 +64,7 @@ def test_offline_retry_and_restart(settings, monkeypatch):
     restarted = PhotoSync(settings)
     asyncio.run(run_until(restarted, lambda: restarted.status("cas", [ref]).get(ref) == "synced"))
     restarted.enqueue("cas", ref)
-    assert restarted.status("cas", [ref, "cas/batch/unknown.png"]) == {ref: "synced"}
+    assert restarted.status("cas", [ref, "cas/batch/unknown.png"]) == {ref: "synced", "cas/batch/unknown.png": "unknown"}
     assert len(requests) == 2
 
 
@@ -123,8 +123,10 @@ def test_disabled_and_insecure_url(settings):
 
 def test_worker_sends_final_photo_to_tenant_scoped_receiver(settings, tmp_path, monkeypatch):
     import io
+
     from fastapi import FastAPI
     from PIL import Image
+
     from app.photo_receiver import router
     from app.warehouse import current_warehouse
 
@@ -211,6 +213,7 @@ def test_concurrent_workers_claim_only_one_upload(settings, monkeypatch):
 def test_reconcile_queues_only_finalized_referenced_photos(settings):
     import cv2
     import numpy as np
+
     from app.photo_sync import is_final_png, mark_final_png
     from app.warehouse import current_warehouse
 
@@ -234,6 +237,6 @@ def test_reconcile_queues_only_finalized_referenced_photos(settings):
     sync = PhotoSync(settings, Store())
     asyncio.run(sync.reconcile())
     assert sync.status("bgd", ["batch/final.png", "batch/not-final.png", "label-photos/abc.jpg"]) == {
-        "batch/final.png": "pending", "label-photos/abc.jpg": "pending",
+        "batch/final.png": "pending", "batch/not-final.png": "failed", "label-photos/abc.jpg": "pending",
     }
     assert sync.status("cas", ["cas/batch/other.png"]) == {"cas/batch/other.png": "pending"}

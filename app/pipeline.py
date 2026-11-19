@@ -32,8 +32,22 @@ from .strip_tracker import StripConfig, StripTracker, contour_crop_bgra
 logger = logging.getLogger(__name__)
 
 
-def _write_capture(path: Path, data: bytes, *, owned=None):
+def _write_capture(path: Path, data: bytes, *, owned=None, dir_fd=None):
     path.parent.mkdir(parents=True, exist_ok=True)
+    if dir_fd is not None:
+        import secrets
+        name = ".capture-" + secrets.token_hex(16)
+        fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=dir_fd)
+        try:
+            with os.fdopen(fd, "wb") as output:
+                output.write(data)
+            _replace_owned(path.name, name, owned, dir_fd)
+        finally:
+            try:
+                os.unlink(name, dir_fd=dir_fd)
+            except FileNotFoundError:
+                pass
+        return
     file = tempfile.NamedTemporaryFile(dir=path.parent, prefix=".capture-", delete=False)
     temp_path = Path(file.name)
     try:
@@ -43,19 +57,40 @@ def _write_capture(path: Path, data: bytes, *, owned=None):
             os.link(temp_path, path)
             stat = temp_path.stat()
             return stat.st_dev, stat.st_ino
-        stat = path.stat()
-        if (stat.st_dev, stat.st_ino) != owned:
-            raise FileExistsError(f"capture changed before watermarking: {path}")
-        os.replace(temp_path, path)
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            _replace_owned(path.name, temp_path.name, owned, directory)
+        finally:
+            os.close(directory)
     finally:
         temp_path.unlink(missing_ok=True)
 
 
+def _replace_owned(name, temp, owned, directory):
+    import fcntl
+    from .photo_sync import is_pending_png
+
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        current = os.stat(name, dir_fd=directory, follow_symlinks=False)
+        info = os.fstat(fd)
+        if (info.st_dev, info.st_ino) != owned or (current.st_dev, current.st_ino) != owned:
+            raise FileExistsError("capture changed before watermarking")
+        with os.fdopen(os.dup(fd), "rb") as original:
+            if not is_pending_png(original.read(12 * 1024 * 1024 + 1)):
+                raise ValueError("capture is not pending")
+        os.replace(temp, name, src_dir_fd=directory, dst_dir_fd=directory)
+    finally:
+        os.close(fd)
+
+
 def _save_original(path: Path, bgra: np.ndarray):
-    return _write_capture(path, encode_png(bgra))
+    from .photo_sync import mark_pending_png
+    return _write_capture(path, mark_pending_png(encode_png(bgra)))
 
 
-def _save_capture(path: Path, bgra: np.ndarray, view: str, awb=None, *, captured_at=None, owned=None) -> None:
+def _save_capture(path: Path, bgra: np.ndarray, view: str, awb=None, *, captured_at=None, owned=None, dir_fd=None) -> None:
     def field(name):
         value = getattr(awb, name, None)
         return str(value).strip() if value is not None and str(value).strip() else "-"
@@ -90,7 +125,7 @@ def _save_capture(path: Path, bgra: np.ndarray, view: str, awb=None, *, captured
     for i, text in enumerate(footer_lines):
         cv2.putText(output, text, (padding, height + padding + 8 + i * line_height), font, scale, (255, 255, 255, 255), 1, cv2.LINE_AA)
     from .photo_sync import mark_final_png
-    _write_capture(path, mark_final_png(encode_png(output)), owned=owned)
+    _write_capture(path, mark_final_png(encode_png(output)), owned=owned, dir_fd=dir_fd)
 
 
 STATUS_COLORS = {
@@ -353,6 +388,9 @@ class Pipeline:
         if not self._owns_capture(decision, batch_id, parcel.seq, crop_rel):
             return
         awb = await self._capture_awb(decision)
+        if decision.record.awb_id is not None and awb is None:
+            logger.warning("capture remains pending: paired AWB unavailable")
+            return
         try:
             await asyncio.to_thread(_save_capture, crop_path, bgra, "top", awb, captured_at=captured_at, owned=owned)
             await self._enqueue_final_photo(crop_rel)
@@ -714,6 +752,9 @@ class Pipeline:
         if not self._owns_capture(decision, batch_id, det.parcel_id, crop_rel):
             return
         awb = await self._capture_awb(decision)
+        if decision.record.awb_id is not None and awb is None:
+            logger.warning("capture remains pending: paired AWB unavailable")
+            return
         try:
             await asyncio.to_thread(_save_capture, crop_path, bgra, "top", awb, captured_at=side.get("captured_at") if side else None, owned=owned)
             await self._enqueue_final_photo(crop_rel)

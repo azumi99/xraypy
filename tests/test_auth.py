@@ -77,6 +77,7 @@ def test_bad_token_and_bgd_access(client):
     result = client.post("/api/auth/login", json={"email": "bgd@paratekno.com", "password": "admin123"})
     assert result.json()["user"]["access"] == "bgd"
     assert client.get("/crops/cas/other.jpg").status_code == 403
+    assert client.get("/crops/CAS/other.jpg").status_code == 403
 
 
 def test_spa_assets_cannot_escape_ui_directory(client):

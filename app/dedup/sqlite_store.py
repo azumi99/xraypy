@@ -275,6 +275,25 @@ class SqliteStore(IdentityStore):
                 return [row["ref"] for row in rows]
         return await asyncio.to_thread(run)
 
+    async def photo_recovery_metadata(self, ref: str):
+        def run():
+            with self._lock:
+                rows = self._connect().execute(
+                    "SELECT i.id AS identity_id, i.crop_ref, i.crop_ref_side, i.awb_id, "
+                    "a.id, a.awb_number, a.batch_id, a.status, a.parcel_id, a.created_at, "
+                    "a.hawb_number, a.part, a.total, a.label_photo_ref, a.timecreated "
+                    "FROM parcel_identity i LEFT JOIN awb a ON a.id=i.awb_id "
+                    "WHERE i.crop_ref=? OR i.crop_ref_side=?", (ref, ref)).fetchall()
+                if len(rows) != 1:
+                    raise ValueError("photo has ambiguous parcel ownership")
+                row = rows[0]
+                if (row["crop_ref"] == ref) == (row["crop_ref_side"] == ref):
+                    raise ValueError("photo has ambiguous view")
+                if row["awb_id"] is not None and (row["id"] is None or row["status"] != "PAIRED" or row["parcel_id"] != row["identity_id"]):
+                    raise ValueError("photo has inconsistent AWB ownership")
+                return ("top" if row["crop_ref"] == ref else "side", _map_awb_row(row) if row["awb_id"] is not None else None)
+        return await asyncio.to_thread(run)
+
     async def photo_references_existing(self, refs: list[str]) -> set[str]:
         if not refs:
             return set()

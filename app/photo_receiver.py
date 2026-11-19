@@ -1,5 +1,6 @@
 """Authenticated, tenant-isolated receiver for finalized photos."""
 
+import asyncio
 import errno
 import hashlib
 import hmac
@@ -18,12 +19,23 @@ from fastapi import APIRouter, File, Form, Header, HTTPException, Request, Uploa
 from fastapi.responses import Response
 from PIL import Image, UnidentifiedImageError
 
-from .warehouse import warehouse_context
 from .photo_sync import PhotoSync
+from .warehouse import warehouse_context
 
 router = APIRouter(tags=["photo sync"])
 MAX_BYTES = 12 * 1024 * 1024
 MAX_PIXELS = 40_000_000
+
+
+def _io_limit(app):
+    if not hasattr(app.state, "photo_sync_io_limit"):
+        app.state.photo_sync_io_limit = asyncio.Semaphore(2)
+    return app.state.photo_sync_io_limit
+
+
+def _read_checked(root, site, ref):
+    data = read_photo(root, site, ref)
+    return data, photo_mime(data)
 
 
 def read_photo(root, site, ref):
@@ -32,6 +44,25 @@ def read_photo(root, site, ref):
     if len(data) > MAX_BYTES:
         raise ValueError("Photo too large")
     return data
+
+
+def photo_stored(root, site, ref):
+    """Check a tenant-scoped file without reading or following symlinks."""
+    parts = PhotoSync._parts(site, ref)
+    directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for part in parts[:-1]:
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+            os.close(directory)
+            directory = child
+        fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        try:
+            info = os.fstat(fd)
+            return stat.S_ISREG(info.st_mode) and 0 < info.st_size <= MAX_BYTES
+        finally:
+            os.close(fd)
+    finally:
+        os.close(directory)
 
 
 def photo_mime(data):
@@ -56,8 +87,8 @@ async def get_photo(request: Request, ref: str, authorization: Annotated[str | N
     if not exists:
         raise HTTPException(404, "Photo not found")
     try:
-        data = read_photo(request.app.state.settings.crop_dir, site, ref)
-        mime = photo_mime(data)
+        async with _io_limit(request.app):
+            data, mime = await asyncio.to_thread(_read_checked, request.app.state.settings.crop_dir, site, ref)
     except (OSError, ValueError, UnidentifiedImageError):
         raise HTTPException(404, "Photo not found") from None
     return Response(data, media_type=mime, headers={"X-Content-SHA256": hashlib.sha256(data).hexdigest(),
@@ -143,7 +174,7 @@ async def receive_photo(request: Request, ref: Annotated[str, Form()], sha256: A
     parts = ref.split("/")
     if (not ref or "\\" in ref or any(p in ("", ".", "..") or "\x00" in p for p in parts)
             or (site == "cas" and (parts[0] != "cas" or len(parts) < 2))
-            or (site == "bgd" and parts[0] == "cas")):
+            or (site == "bgd" and parts[0].casefold() == "cas")):
         raise HTTPException(400, "Invalid photo reference")
     if not re.fullmatch(r"[0-9a-fA-F]{64}", sha256):
         raise HTTPException(400, "Invalid digest")
@@ -160,6 +191,12 @@ async def receive_photo(request: Request, ref: Annotated[str, Form()], sha256: A
     digest = hashlib.sha256(data).hexdigest()
     if not hmac.compare_digest(digest, sha256.lower()):
         raise HTTPException(400, "Digest mismatch")
+    async with _io_limit(request.app):
+        created = await asyncio.to_thread(_validate_and_publish, request.app.state.settings.crop_dir, parts, data, digest)
+    return {"status": "created" if created else "exists", "sha256": digest}
+
+
+def _validate_and_publish(root, parts, data, digest):
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("error", Image.DecompressionBombWarning)
@@ -172,9 +209,8 @@ async def receive_photo(request: Request, ref: Annotated[str, Form()], sha256: A
     except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError, Image.DecompressionBombWarning):
         raise HTTPException(400, "Invalid image") from None
     try:
-        created = _publish(request.app.state.settings.crop_dir, parts, data, digest)
+        return _publish(root, parts, data, digest)
     except OSError as exc:
         if exc.errno in (errno.ELOOP, errno.ENOTDIR, errno.EISDIR):
             raise HTTPException(400, "Unsafe photo path") from None
         raise
-    return {"status": "created" if created else "exists", "sha256": digest}

@@ -106,6 +106,10 @@ class IdentityStore(ABC):
     async def list_photo_references(self) -> list[str]:
         """List photo references in the current warehouse for recovery."""
 
+    async def photo_recovery_metadata(self, ref: str):
+        """Return the unique parcel view and paired AWB for a referenced photo."""
+        raise NotImplementedError
+
     @abstractmethod
     async def find_similar(
         self,

@@ -3,8 +3,8 @@
 import asyncio
 import hashlib
 import hmac
-import re
 import os
+import re
 from pathlib import Path
 
 import httpx
@@ -18,6 +18,7 @@ from .security import identity
 from .warehouse import warehouse_context
 
 router = APIRouter(tags=["photo delivery"])
+_WINDOWS = os.name == "nt"
 
 
 async def _remote(sync, site, ref):
@@ -57,7 +58,7 @@ async def deliver_photo(request: Request, ref: str):
         warehouse_context.reset(token)
     if not exists:
         raise HTTPException(404, "Photo not found")
-    if os.name == "nt":
+    if _WINDOWS:
         # Use the existing StaticFiles-style resolved-path check for local
         # Windows previews; automatic synchronization remains disabled there.
         root = Path(request.app.state.settings.crop_dir).resolve()

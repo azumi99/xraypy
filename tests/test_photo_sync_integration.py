@@ -28,11 +28,12 @@ def test_receiver_middleware_and_warehouse_isolation(tmp_path, monkeypatch):
         attached = client.post(f"/api/awb/{awb['id']}/label-photo", files={"file": ("a.png", data, "image/png")})
         assert attached.status_code == 200
         ref = attached.json()["label_photo_ref"]
-        assert client.get("/api/sync/status", params={"ref": ref}).json() == {"items": {}}
+        assert client.get("/api/sync/status", params={"ref": ref}).json() == {"enabled": True, "items": {ref: "stored"}}
         client.post("/api/auth/logout")
-        upload = lambda token: client.put("/api/sync/photos", headers={"Authorization": "Bearer " + token},
-                                          data={"ref": ref, "sha256": digest},
-                                          files={"file": ("a.png", data, "image/png")})
+        def upload(token):
+            return client.put("/api/sync/photos", headers={"Authorization": "Bearer " + token},
+                              data={"ref": ref, "sha256": digest},
+                              files={"file": ("a.png", data, "image/png")})
         assert upload("c" * 40).status_code == 400
         assert upload("b" * 40).json() == {"status": "exists", "sha256": digest}
         downloaded = client.get("/api/sync/photos", params={"ref": ref}, headers={"Authorization": "Bearer " + "b" * 40})
@@ -41,3 +42,29 @@ def test_receiver_middleware_and_warehouse_isolation(tmp_path, monkeypatch):
         assert client.get("/api/sync/photos", params={"ref": ref}, headers={"Authorization": "Bearer " + "c" * 40}).status_code == 404
         assert client.post("/api/sync/photos").status_code == 401
         assert client.get("/api/awb").status_code == 401
+
+
+def test_windows_local_preview_does_not_require_sender(tmp_path, monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    from starlette.requests import Request
+
+    from app import photo_delivery
+    from app.photo_delivery import deliver_photo
+    from app.warehouse import warehouse_context
+
+    root = tmp_path / "crops"
+    (root / "label-photos").mkdir(parents=True)
+    (root / "label-photos/a.png").write_bytes(b"local-image")
+    monkeypatch.setattr(photo_delivery, "_WINDOWS", True)
+    monkeypatch.setattr(photo_delivery, "identity", lambda _: {"access": "bgd"})
+
+    class Store:
+        async def photo_reference_exists(self, ref):
+            return ref == "label-photos/a.png" and warehouse_context.get() == "bgd"
+
+    request = Request({"type": "http", "method": "GET", "path": "/", "headers": [],
+                       "app": SimpleNamespace(state=SimpleNamespace(store=Store(), settings=SimpleNamespace(crop_dir=root)))})
+    response = asyncio.run(deliver_photo(request, "label-photos/a.png"))
+    assert response.path == root / "label-photos/a.png"
