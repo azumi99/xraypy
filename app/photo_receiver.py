@@ -16,7 +16,7 @@ from types import SimpleNamespace
 from typing import Annotated
 
 from fastapi import APIRouter, File, Form, Header, HTTPException, Request, UploadFile
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from PIL import Image, UnidentifiedImageError
 
 from .photo_sync import PhotoSync
@@ -72,8 +72,13 @@ def photo_mime(data):
         return Image.MIME[image.format]
 
 
+def _read_digest(root, site, ref):
+    data = read_photo(root, site, ref)
+    return hashlib.sha256(data).hexdigest()
+
+
 @router.get("/api/sync/photos")
-async def get_photo(request: Request, ref: str, authorization: Annotated[str | None, Header()] = None):
+async def get_photo(request: Request, ref: str, digest: str = "", authorization: Annotated[str | None, Header()] = None):
     site = _site(request.app.state.settings, authorization)
     try:
         PhotoSync._parts(site, ref)
@@ -86,6 +91,13 @@ async def get_photo(request: Request, ref: str, authorization: Annotated[str | N
         warehouse_context.reset(token)
     if not exists:
         raise HTTPException(404, "Photo not found")
+    if digest == "1":
+        async with _io_limit(request):
+            try:
+                value = await asyncio.to_thread(_read_digest, request.app.state.settings.crop_dir, site, ref)
+            except (OSError, ValueError):
+                raise HTTPException(404, "Photo not found") from None
+        return JSONResponse({"sha256": value})
     try:
         async with _io_limit(request.app):
             data, mime = await asyncio.to_thread(_read_checked, request.app.state.settings.crop_dir, site, ref)

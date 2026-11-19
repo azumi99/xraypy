@@ -6,6 +6,7 @@
 .venv/
 venv/
 data/
+logs/
 *.db
 *.sqlite
 *.sqlite3

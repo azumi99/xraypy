@@ -172,6 +172,46 @@ def test_plain_http_200_without_verified_digest_stays_pending(settings, monkeypa
     assert sync.status("bgd", [ref]) == {ref: "pending"}
 
 
+def test_legacy_verification_marks_identical_remote_photos_synced(settings, monkeypatch):
+    import cv2
+    import numpy as np
+    from app.photo_sync import is_final_png, mark_pending_png
+    from app.warehouse import current_warehouse
+
+    _, encoded = cv2.imencode(".png", np.zeros((6, 6, 3), dtype=np.uint8))
+    legacy = encoded.tobytes()
+    assert not is_final_png(legacy)
+    (settings.crop_dir / "batch/legacy.png").write_bytes(legacy)
+    (settings.crop_dir / "batch/pending.png").write_bytes(mark_pending_png(legacy))
+    digest = hashlib.sha256(legacy).hexdigest()
+
+    class Store:
+        async def list_photo_references(self):
+            return ["batch/legacy.png", "batch/pending.png"] if current_warehouse() == "bgd" else []
+
+    sync = PhotoSync(settings, Store())
+    requests_seen = []
+
+    def handler(request):
+        requests_seen.append(request.url.params["ref"])
+        if request.url.params.get("digest") != "1":
+            return httpx.Response(500)
+        return httpx.Response(200, json={"sha256": digest})
+
+    original = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: original(transport=httpx.MockTransport(handler), **kwargs))
+
+    async def run():
+        async with original(transport=httpx.MockTransport(handler)) as client:
+            await sync.verify_legacy(client)
+    asyncio.run(run())
+    assert sync.status("bgd", ["batch/legacy.png"]) == {"batch/legacy.png": "synced"}
+    with sqlite3.connect(settings.photo_sync_outbox_path) as db:
+        assert db.execute("SELECT status FROM photo_outbox WHERE ref='batch/pending.png'").fetchone() is None
+    assert "batch/legacy.png" in requests_seen
+    assert "batch/pending.png" not in requests_seen  # pending-marker tidak diverifikasi
+
+
 def test_concurrent_workers_claim_only_one_upload(settings, monkeypatch):
     ref = "batch/x.png"
     (settings.crop_dir / ref).write_bytes(b"photo")

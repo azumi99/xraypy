@@ -3,10 +3,11 @@ import api from "./api";
 import { useStream } from "./hooks/useStream";
 import LiveTab from "./components/LiveTab";
 import AwbTab from "./components/AwbTab";
-import { BoxIcon, PrinterIcon, TagIcon, VideoIcon } from "./icons";
+import { BoxIcon, PrinterIcon, SettingsIcon, TagIcon, VideoIcon } from "./icons";
 import AwbDetailPage from "./components/AwbDetailPage";
 import LabelsTab from "./components/LabelsTab";
 import { warehousePath } from "./routes";
+import SettingsTab from "./components/SettingsTab";
 const Dashboard = lazy(() => import("./components/Dashboard"));
 
 const TABS = [
@@ -14,9 +15,10 @@ const TABS = [
   { path: "/live", label: "Xray", icon: <VideoIcon /> },
   { path: "/awb", label: "Queue AWB", icon: <TagIcon /> },
   { path: "/labels", label: "Print Label", icon: <PrinterIcon /> },
+  { path: "/settings", label: "Setting", icon: <SettingsIcon /> },
 ];
 
-const PAGE_TITLES = { "/dashboard": "Dashboard", "/live": "Xray", "/awb": "Queue AWB", "/labels": "Print Label" };
+const PAGE_TITLES = { "/dashboard": "Dashboard", "/live": "Xray", "/awb": "Queue AWB", "/labels": "Print Label", "/settings": "Setting" };
 
 /** Router ringan berbasis History API — URL ikut berubah ke /namahalaman. */
 export function usePathRoute() {
@@ -218,6 +220,7 @@ function AuthenticatedApp({ user, onLogout, logoutError, logoutPending }) {
             <AwbTab onChanged={refreshSession} onOpenDetail={(id) => navigate(`/awb/${id}`)} onEvent={onEvent} connected={connected} />
           )}
           {activePath === "/labels" && <LabelsTab />}
+          {activePath === "/settings" && <SettingsTab warehouse={user.access} />}
           {awbDetailId && (
             <AwbDetailPage
               id={awbDetailId}

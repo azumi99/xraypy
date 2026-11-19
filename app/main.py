@@ -204,6 +204,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return response
 
     app.include_router(awb_router, prefix="/api")
+    from .settings_router import router as settings_router
+    app.include_router(settings_router, prefix="/api")
     from .photo_delivery import router as photo_delivery_router
     from .photo_receiver import router as photo_receiver_router
     app.include_router(photo_receiver_router)

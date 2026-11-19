@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import hmac
 import logging
 import os
 import secrets
@@ -236,15 +237,68 @@ class PhotoSync:
                 except (OSError, ValueError, NotImplementedError):
                     logger.warning("photo sync recovery skipped an inaccessible or invalid photo")
 
+    async def verify_legacy(self, client):
+        """Acknowledge legacy unmarked photos whose VM copy is byte-identical.
+
+        Foto pra-marker tidak diunggah ulang; kecocokan digest terhadap server
+        adalah bukti cukup untuk menandai synced tanpa mengubah byte lokal.
+        """
+        if not self.enabled or self.store is None:
+            return
+        from .warehouse import warehouse_context
+
+        for site in ("bgd", "cas"):
+            token = warehouse_context.set(site)
+            try:
+                refs = await self.store.list_photo_references()
+            finally:
+                warehouse_context.reset(token)
+            label_prefix = "cas/label-photos/" if site == "cas" else "label-photos/"
+            verified = 0
+            for ref in refs:
+                if ref.startswith(label_prefix):
+                    continue
+                with self._db() as db:
+                    row = db.execute("SELECT status FROM photo_outbox WHERE site=? AND ref=?", (site, ref)).fetchone()
+                if row is not None:
+                    continue
+                try:
+                    data = await asyncio.to_thread(self._read, site, ref)
+                except (OSError, ValueError):
+                    continue
+                if is_final_png(data) or is_pending_png(data):
+                    continue
+                digest = hashlib.sha256(data).hexdigest()
+                headers = {"Authorization": "Bearer " + self.tokens[site]}
+                try:
+                    response = await client.get(self.url, params={"ref": ref, "digest": "1"}, headers=headers)
+                except httpx.HTTPError:
+                    continue
+                if response.status_code != 200:
+                    continue
+                remote = response.json().get("sha256") if response.headers.get("content-type", "").startswith("application/json") else None
+                if remote and hmac.compare_digest(remote, digest):
+                    stat = (self.root / ref).stat()
+                    with self._db() as db:
+                        db.execute("INSERT OR IGNORE INTO photo_outbox (site,ref,sha256,size,status,attempts,next_attempt) VALUES (?,?,?,?,'synced',0,0)",
+                                   (site, ref, digest, stat.st_size))
+                    verified += 1
+            if verified:
+                logger.info("photo sync legacy verified %d identical %s photos", verified, site)
+
     async def run(self):
         if not self.enabled:
             return
         async with httpx.AsyncClient(timeout=30, follow_redirects=False) as client:
             next_reconcile = 0.0
+            next_legacy = 0.0
             while True:
                 if self.store is not None and time.monotonic() >= next_reconcile:
                     await self.reconcile()
                     next_reconcile = time.monotonic() + 60
+                if self.store is not None and time.monotonic() >= next_legacy:
+                    await self.verify_legacy(client)
+                    next_legacy = time.monotonic() + 300
                 lease = secrets.token_hex(16)
                 with self._db() as db:
                     db.execute("BEGIN IMMEDIATE")

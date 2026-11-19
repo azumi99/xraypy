@@ -7,24 +7,26 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from .security import require_operator
-from .live import live_resources
+from .live import live_resources, site_control_lock
 
 router = APIRouter(tags=["session"])
 
 
 @router.post("/session/start")
 async def start_session(request: Request, _: None = Depends(require_operator)) -> dict[str, Any]:
-    pipeline = live_resources(request.app).pipeline
-    try:
-        batch_id = await pipeline.start_session()
-    except RuntimeError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    async with site_control_lock(request.app):
+        pipeline = live_resources(request.app).pipeline
+        try:
+            batch_id = await pipeline.start_session()
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"batch_id": batch_id}
 
 
 @router.post("/session/stop")
 async def stop_session(request: Request, _: None = Depends(require_operator)) -> dict[str, Any]:
-    return await live_resources(request.app).pipeline.stop_session()
+    async with site_control_lock(request.app):
+        return await live_resources(request.app).pipeline.stop_session()
 
 
 @router.get("/session/state")

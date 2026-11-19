@@ -42,10 +42,29 @@ def _connect(warehouse):
     timeout = float(env.get("MANIFEST_CONNECT_TIMEOUT", "5"))
     if not 0 < timeout <= 60:
         raise ValueError("invalid manifest timeout")
-    return pymysql.connect(host=host, port=int(env.get(prefix + "PORT", "3306")), user=user,
-                           password=password, database=database, connect_timeout=timeout,
-                           read_timeout=timeout, write_timeout=timeout,
-                           cursorclass=pymysql.cursors.DictCursor)
+    options = dict(host=host, port=int(env.get(prefix + "PORT", "3306")), user=user,
+                   password=password, database=database, connect_timeout=timeout,
+                   read_timeout=timeout, write_timeout=timeout,
+                   cursorclass=pymysql.cursors.DictCursor)
+    enabled = (env.get(f"MANIFEST_{warehouse.upper()}_TUNNEL_ENABLED") or "false").lower()
+    if enabled == "false":
+        return pymysql.connect(**options)
+    if enabled != "true":
+        raise ValueError("invalid manifest tunnel configuration")
+    from ..manifest_tunnels import _config
+    from ..tunnel_manager import manager
+
+    config = _config(env, warehouse.upper())
+    if config is None or config["local_port"] != options["port"]:
+        raise ValueError("manifest tunnel destination mismatch")
+    conn = pymysql.connect(**options, defer_connect=True)
+    sock = manager.open_socket(warehouse, timeout=timeout)
+    try:
+        conn.connect(sock=sock)
+    except BaseException:
+        sock.close()
+        raise
+    return conn
 
 
 def _lookup(warehouse, mawb, hawb):

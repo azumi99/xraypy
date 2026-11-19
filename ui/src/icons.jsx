@@ -38,6 +38,14 @@ export const PrinterIcon = () => (
   </svg>
 );
 
+export const SettingsIcon = () => (
+  <svg {...base} aria-hidden="true">
+    <circle cx="12" cy="12" r="3" />
+    <path d="M12 2v2m0 16v2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M2 12h2m16 0h2M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42" />
+    <circle cx="12" cy="12" r="8" />
+  </svg>
+);
+
 export const SearchIcon = () => (
   <svg {...base}>
     <circle cx="11" cy="11" r="8" />

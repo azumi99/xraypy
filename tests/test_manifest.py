@@ -64,6 +64,38 @@ def test_mawb_candidates_use_warehouse_table_and_parameter(monkeypatch, warehous
     connection.close.assert_called_once()
 
 
+def test_manifest_uses_owned_tunnel_socket(monkeypatch):
+    import pymysql
+    from app.tunnel_manager import manager
+
+    config = {
+        "MANIFEST_BGD_TUNNEL_ENABLED": "true", "MANIFEST_BGD_DB_READONLY_HOST": "127.0.0.1",
+        "MANIFEST_BGD_DB_PORT": "13307", "MANIFEST_BGD_DB_USER": "user",
+        "MANIFEST_BGD_DB_PASSWORD": "password", "MANIFEST_BGD_DB_NAME": "db",
+        "MANIFEST_BGD_SSH_HOST": "example.test", "MANIFEST_BGD_SSH_PORT": "22",
+        "MANIFEST_BGD_SSH_USER": "operator", "MANIFEST_BGD_SSH_PASSWORD": "password",
+        "MANIFEST_BGD_TUNNEL_REMOTE_HOST": "db.example.test", "MANIFEST_BGD_TUNNEL_REMOTE_PORT": "3306",
+    }
+    for name in config:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(manifest, "dotenv_values", lambda _: config)
+    connection = MagicMock()
+    connect = MagicMock(return_value=connection)
+    monkeypatch.setattr(pymysql, "connect", connect)
+    owned_socket = MagicMock()
+    monkeypatch.setattr(manager, "open_socket", MagicMock(return_value=owned_socket))
+    assert manifest._connect("bgd") is connection
+    assert connect.call_args.kwargs["defer_connect"] is True
+    connection.connect.assert_called_once_with(sock=owned_socket)
+    manager.open_socket.assert_called_once_with("bgd", timeout=5)
+
+    manager.open_socket.side_effect = OSError("unavailable")
+    connection.connect.reset_mock()
+    with pytest.raises(OSError):
+        manifest._connect("bgd")
+    connection.connect.assert_not_called()
+
+
 async def test_statuses(monkeypatch):
     assert (await manifest.fetch_manifest("cas", "M", None))["status"] == "missing_numbers"
     monkeypatch.setattr(manifest, "_lookup", lambda *args: None)

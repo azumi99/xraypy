@@ -1,5 +1,6 @@
 """Isolated in-process live resources for each authenticated warehouse."""
 
+import asyncio
 from dataclasses import dataclass
 
 from .events import EventBus
@@ -13,6 +14,13 @@ class LiveResources:
     source_mgr: SourceManager
     bus: EventBus
     pipeline: Pipeline
+
+
+def site_control_lock(app):
+    """Serialize session lifecycle and disruptive tunnel actions per warehouse."""
+    if not hasattr(app.state, "site_control_locks"):
+        app.state.site_control_locks = {"bgd": asyncio.Lock(), "cas": asyncio.Lock()}
+    return app.state.site_control_locks[current_warehouse()]
 
 
 def live_resources(app, warehouse: str | None = None) -> LiveResources:
