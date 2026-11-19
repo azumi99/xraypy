@@ -99,6 +99,7 @@ export default function LiveTab({ warehouse, frames, session, onSessionChange, o
               <span className="scan-list-number">
                 <span className="scan-list-waybill"><span className="scan-list-waybill-label">MAWB</span><span>{awb.awb_number || "—"}</span></span>
                 <span className="scan-list-waybill"><span className="scan-list-waybill-label">HAWB</span><span>{awb.hawb_number || "—"}</span></span>
+                <span className="scan-list-pieces">{awb.part != null ? `Piece ${awb.part} dari ${awb.total ?? "—"}` : "Piece —"}</span>
               </span>
               <span className="scan-list-status">{leaving.includes(awb.awb_number) ? "Tersimpan" : "Waiting"}</span>
             </li>

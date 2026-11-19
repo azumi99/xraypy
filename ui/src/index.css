@@ -383,9 +383,13 @@
   .scan-list-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
   .scan-list-heading h3 { margin: 4px 0 0; }
   .scan-list { display: grid; gap: 8px; max-height: 620px; overflow-y: auto; }
-  .scan-list-item { display: flex; align-items: center; gap: 12px; min-width: 0; padding: 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-cream); }
+  .scan-list-item { display: flex; align-items: center; gap: 12px; min-width: 0; padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-cream); transition: border-color .15s, background .15s; }
+  .scan-list-item:hover { border-color: var(--cta); background: var(--bg); }
+  .scan-list-item:first-child { border-left: 3px solid var(--cta); }
   .scan-list-index { color: var(--text-muted); font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; }
   .scan-list-number { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 13px; font-weight: 700; }
+  .scan-list-pieces { display: inline-flex; align-items: center; gap: 5px; margin-top: 5px; color: var(--text-muted); font-size: 11px; font-weight: 600; }
+  .scan-list-pieces::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: var(--secondary-dark); }
   .scan-list-waybill { display: flex; align-items: baseline; gap: 8px; }
   .scan-list-waybill + .scan-list-waybill { margin-top: 4px; }
   .scan-list-waybill-label { flex: 0 0 42px; color: var(--text-muted); font-size: 10px; font-weight: 700; letter-spacing: .04em; }

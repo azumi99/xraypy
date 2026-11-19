@@ -151,7 +151,7 @@ export default function AwbTab({ onChanged, onOpenDetail, onEvent, connected }) 
       <table className="awb-data-table w-full">
         <thead>
           {grouped ? <tr><th>#</th><th>MAWB</th><th>Airlines</th><th>Origin</th><th>Pieces</th><th>Status</th></tr> :
-          <tr><th>#</th><th>MAWB</th><th>HAWB</th><th>Airlines</th><th>Origin</th><th>Status</th><th>Date Time</th><th>Aksi</th></tr>}
+          <tr><th>#</th><th>MAWB</th><th>HAWB</th><th>Pieces</th><th>Airlines</th><th>Origin</th><th>Status</th><th>Date Time</th><th>Aksi</th></tr>}
         </thead>
         <tbody>
           {grouped ? pageItems.map((group, i) => <tr key={group.items[0].id} className="cursor-pointer" onClick={() => onOpenDetail?.(group.items[0].id)}>
@@ -169,6 +169,7 @@ export default function AwbTab({ onChanged, onOpenDetail, onEvent, connected }) 
                 <td className="muted">{(safePage - 1) * pageSize + i + 1}</td>
                 <td><button className="awb-number" onClick={(e) => { e.stopPropagation(); onOpenDetail?.(a.id); }}>{a.awb_number}</button></td>
                 <td>{a.hawb_number ?? "—"}</td>
+                <td>{a.part != null ? `${a.part} / ${a.total ?? "—"}` : "—"}</td>
                 <td title={manifests[a.id]?.status === "unavailable" ? "Manifest tidak tersedia" : undefined}>{manifests[a.id] ? (manifests[a.id].data?.airlines_code ?? "—") : "…"}</td>
                 <td title={manifests[a.id]?.status === "unavailable" ? "Manifest tidak tersedia" : undefined}>{manifests[a.id] ? (manifests[a.id].data?.origin ?? "—") : "…"}</td>
                 <td><span className={`awb-status ${statusColor[a.status] ?? ""}`}>{a.status === "PAIRED" ? "COMPLETE" : a.status}</span></td>
@@ -187,7 +188,7 @@ export default function AwbTab({ onChanged, onOpenDetail, onEvent, connected }) 
             );
           })}
           {filtered.length === 0 && (
-            <tr><td colSpan={grouped ? 6 : 8} className="muted text-center !py-10">Tidak ada data AWB yang cocok.</td></tr>
+            <tr><td colSpan={grouped ? 6 : 9} className="muted text-center !py-10">Tidak ada data AWB yang cocok.</td></tr>
           )}
         </tbody>
       </table>
