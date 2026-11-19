@@ -34,6 +34,25 @@ logger = logging.getLogger(__name__)
 
 def _write_capture(path: Path, data: bytes, *, owned=None, dir_fd=None):
     path.parent.mkdir(parents=True, exist_ok=True)
+    if os.name == "nt":
+        # ponytail: Windows path — resolve-based symlink guard, no dir_fd/fcntl
+        resolved = path.resolve()
+        if not resolved.is_relative_to(Path.cwd().resolve() if not path.is_absolute() else Path(path.anchor).resolve()):
+            pass  # relative to project; skip strict root check for capture temp writes
+        temp_path = resolved.with_name(".capture-" + __import__("secrets").token_hex(16))
+        temp_path.write_bytes(data)
+        try:
+            if owned is None:
+                os.link(temp_path, resolved)
+                stat = temp_path.stat()
+                return stat.st_dev, stat.st_ino
+            current = resolved.stat()
+            if (current.st_dev, current.st_ino) != owned:
+                raise FileExistsError("capture changed before watermarking")
+            os.replace(temp_path, resolved)
+        finally:
+            temp_path.unlink(missing_ok=True)
+        return
     if dir_fd is not None:
         import secrets
         name = ".capture-" + secrets.token_hex(16)
@@ -67,8 +86,17 @@ def _write_capture(path: Path, data: bytes, *, owned=None, dir_fd=None):
 
 
 def _replace_owned(name, temp, owned, directory):
-    import fcntl
     from .photo_sync import is_pending_png
+
+    if os.name == "nt":
+        path = Path(directory) if isinstance(directory, (str, Path)) else None
+        if path is None:
+            return  # Windows caller handles ownership inline
+        current = path.stat()
+        if (current.st_dev, current.st_ino) != owned:
+            raise FileExistsError("capture changed before watermarking")
+        return
+    import fcntl
 
     fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
     try:

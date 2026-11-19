@@ -49,6 +49,9 @@ def read_photo(root, site, ref):
 def photo_stored(root, site, ref):
     """Check a tenant-scoped file without reading or following symlinks."""
     parts = PhotoSync._parts(site, ref)
+    if os.name == "nt":
+        path = (Path(root).joinpath(*parts)).resolve()
+        return path.is_relative_to(Path(root).resolve()) and not path.is_symlink() and path.is_file() and 0 < path.stat().st_size <= MAX_BYTES
     directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         for part in parts[:-1]:
@@ -134,7 +137,43 @@ def _site(settings, authorization):
     return matches[0]
 
 
+def _publish_windows(root, parts, data, digest):
+    """Atomic publish on Windows: temp file + rename, symlink-guarded by resolve."""
+    import tempfile
+
+    root_path = Path(root).resolve()
+    target = root_path.joinpath(*parts)
+    if not target.resolve().is_relative_to(root_path):
+        raise HTTPException(400, "Unsafe photo path")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        actual = hashlib.sha256(target.read_bytes()).hexdigest()
+        if hmac.compare_digest(actual, digest):
+            return False
+        raise HTTPException(409, "Photo already exists with different content")
+    fd, temp_name = tempfile.mkstemp(dir=target.parent, prefix=".photo-sync-")
+    try:
+        with os.fdopen(fd, "wb") as output:
+            output.write(data)
+            output.flush()
+            os.fsync(output.fileno())
+        os.link(temp_name, target)
+        return True
+    except FileExistsError:
+        actual = hashlib.sha256(target.read_bytes()).hexdigest() if target.is_file() else None
+        if actual and hmac.compare_digest(actual, digest):
+            return False
+        raise HTTPException(409, "Photo already exists with different content") from None
+    finally:
+        try:
+            os.unlink(temp_name)
+        except FileNotFoundError:
+            pass
+
+
 def _publish(root, parts, data, digest):
+    if os.name == "nt":
+        return _publish_windows(root, parts, data, digest)
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     directory = os.open(root, flags)
     temp = None

@@ -172,6 +172,26 @@ def test_plain_http_200_without_verified_digest_stays_pending(settings, monkeypa
     assert sync.status("bgd", [ref]) == {ref: "pending"}
 
 
+def test_windows_path_uses_resolve_guard(settings, monkeypatch):
+    """Jalur Windows: resolve+is_relative_to menggantikan O_NOFOLLOW/dir_fd."""
+    import app.photo_sync as module
+    from app.photo_sync import PhotoSync
+
+    sync = PhotoSync(settings)
+    monkeypatch.setattr(module.os, "name", "nt", raising=False)
+
+    data = b"windows-photo-data"
+    target = settings.crop_dir / "batch" / "win.png"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(data)
+    assert sync._read("bgd", "batch/win.png") == data
+
+    (settings.crop_dir / "batch" / "link.png").symlink_to(target)
+    with pytest.raises(ValueError):
+        sync._read("bgd", "batch/link.png")
+    monkeypatch.setattr(module.os, "name", "posix", raising=False)
+
+
 def test_legacy_verification_marks_identical_remote_photos_synced(settings, monkeypatch):
     import cv2
     import numpy as np

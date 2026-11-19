@@ -59,12 +59,21 @@ async def deliver_photo(request: Request, ref: str):
     if not exists:
         raise HTTPException(404, "Photo not found")
     if _WINDOWS:
-        # Use the existing StaticFiles-style resolved-path check for local
-        # Windows previews; automatic synchronization remains disabled there.
+        # Windows: local-first with resolve-based path guard; remote fallback
+        # works identically via PhotoSync when enabled.
         root = Path(request.app.state.settings.crop_dir).resolve()
         path = (root / ref).resolve()
-        if path.is_relative_to(root) and path.is_file():
+        if path.is_relative_to(root) and not path.is_symlink() and path.is_file():
             return FileResponse(path, headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
+        sync = request.app.state.photo_sync
+        if sync.enabled:
+            try:
+                data = await asyncio.wait_for(_remote(sync, site, ref), timeout=15)
+            except (httpx.HTTPError, TimeoutError, KeyError):
+                raise HTTPException(503, "Photo source unavailable") from None
+            return Response(data, media_type=photo_mime(data),
+                            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
+                                     "X-Content-SHA256": hashlib.sha256(data).hexdigest()})
         raise HTTPException(404, "Photo not found")
     try:
         data = await asyncio.to_thread(read_photo, request.app.state.settings.crop_dir, site, ref)

@@ -69,8 +69,6 @@ class PhotoSync:
         self.enabled = getattr(settings, "photo_sync_enabled", False)
         if not self.enabled:
             return
-        if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY") or os.open not in os.supports_dir_fd:
-            raise RuntimeError("Photo sync requires secure descriptor-relative file access; Windows is not supported yet")
         self.store = store
         self.root = Path(settings.crop_dir)
         self.outbox = str(settings.photo_sync_outbox_path)
@@ -119,6 +117,18 @@ class PhotoSync:
 
     def _read(self, site, ref):
         parts = self._parts(site, ref)
+        if os.name == "nt":
+            # ponytail: resolve+is_relative_to menggantikan O_NOFOLLOW di Windows;
+            # cek symlink pada path asli SEBELUM resolve (resolve mengikuti symlink).
+            original = self.root.joinpath(*parts)
+            if original.is_symlink():
+                raise ValueError("unsafe photo path")
+            path = original.resolve()
+            if not path.is_relative_to(self.root.resolve()):
+                raise ValueError("unsafe photo path")
+            if not path.is_file() or path.stat().st_size > 12 * 1024 * 1024:
+                raise ValueError("photo is not a regular file or exceeds upload size limit")
+            return path.read_bytes()
         directory = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
             for part in parts[:-1]:
