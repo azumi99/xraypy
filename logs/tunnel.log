@@ -1,0 +1,27 @@
+
+all tunnels started
+Exception (client): Error reading SSH protocol banner
+Traceback (most recent call last):
+  File "C:\xraypy\.venv\Lib\site-packages\paramiko\transport.py", line 2227, in _check_banner
+    buf = self.packetizer.readline(timeout)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\xraypy\.venv\Lib\site-packages\paramiko\packet.py", line 395, in readline
+    buf += self._read_timeout(timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\xraypy\.venv\Lib\site-packages\paramiko\packet.py", line 665, in _read_timeout
+    raise EOFError()
+EOFError
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\xraypy\.venv\Lib\site-packages\paramiko\transport.py", line 2043, in run
+    self._check_banner()
+  File "C:\xraypy\.venv\Lib\site-packages\paramiko\transport.py", line 2231, in _check_banner
+    raise SSHException(
+paramiko.ssh_exception.SSHException: Error reading SSH protocol banner
+
+[CAS] error: Error reading SSH protocol banner; reconnecting in 5s
+[DB] listening 127.0.0.1:15432 -> 127.0.0.1:5432 via 159.138.103.200:23022
+[BGD] listening 127.0.0.1:13307 -> 10.1.1.103:3306 via 110.239.92.41:23022
+[CAS] listening 127.0.0.1:13308 -> 10.1.1.113:3306 via 110.239.67.228:23022
