@@ -545,6 +545,28 @@ def _merge_wrappers(boxes: list[tuple[int, int, int, int]], frame: np.ndarray, w
     return [merged.get(i, box) for i, box in enumerate(boxes) if i not in used]
 
 
+def side_capture_silhouettes(frame: np.ndarray) -> list[tuple[int, int, int, int]]:
+    """Find capture silhouettes, including components that still touch an edge."""
+    h, w = frame.shape[:2]
+    band = frame[:max(3, h // 20)].astype(np.int16)
+    background = np.median(band, axis=0)
+    if np.median(background) < 100:
+        return []
+    variation = np.percentile(np.abs(band - background).max(axis=2), 90)
+    if variation > 20:
+        return []
+    contrast = (background - frame).max(axis=2)
+    mask = (contrast >= max(12, round(2 * variation))).astype(np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    silhouettes = []
+    for contour in contours:
+        x, y, width, height = cv2.boundingRect(contour)
+        if width >= w * 0.025 and height >= h * 0.025 and cv2.contourArea(contour) >= width * height * 0.25:
+            silhouettes.append((x, y, x + width - 1, y + height - 1))
+    return silhouettes
+
+
 def _side_flat_blobs(frame: np.ndarray, viewport_end: int) -> list[tuple[int, int, int, int]]:
     """Find long, low-profile parcels whose X-ray color survives weak grayscale contrast."""
     small = cv2.resize(frame, (640, 360))

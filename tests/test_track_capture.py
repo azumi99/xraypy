@@ -631,3 +631,52 @@ def test_pairing_resolves_competing_top_detections_by_belt_position():
     pipeline._match_track_captures(12.0)
 
     assert paired == [3]
+
+
+async def test_side_capture_uses_complete_silhouette_and_best_clearance():
+    pipeline = Pipeline(Settings(_env_file=None), MagicMock(), MagicMock(), MagicMock())
+    pipeline.session.batch_id = "batch"
+    box = iter([(65, 135, 195, 205), (90, 135, 240, 205), (135, 135, 280, 205), (200, 135, 350, 205)])
+    pipeline._side_detector = SimpleNamespace(process=lambda _: [
+        SimpleNamespace(parcel_id=1, bbox=next(box), conf=0.9),
+    ])
+
+    def frame(left, right):
+        result = np.full((480, 720, 3), 220, np.uint8)
+        result[230:345, left:right] = 90
+        return result
+
+    paired = []
+    pipeline._store_paired_side = lambda slot: paired.append(slot["side"])
+    pipeline._pending_top.append({"batch_id": "batch", "time": 10.20, "seq": 3})
+    await pipeline._process_side_track_frame(frame(0, 205), 10.0, "batch")
+    await pipeline._process_side_track_frame(frame(0, 260), 10.1, "batch")
+    assert not pipeline._pending_side and not pipeline._side_capture_samples
+
+    await pipeline._process_side_track_frame(frame(12, 318), 10.20, "batch")
+    assert len(pipeline._pending_side) == 1
+    await pipeline._process_side_track_frame(frame(100, 406), 10.30, "batch")
+    assert len(pipeline._pending_side) == 1
+    pipeline._match_track_captures(11.0)
+    crop, = paired
+    ys, xs = np.where(crop[:, :, 0] == 90)
+    assert xs.max() - xs.min() + 1 == 306
+    assert ys.max() - ys.min() + 1 == 115
+    assert min(xs.min(), crop.shape[1] - 1 - xs.max()) >= 40
+    assert min(ys.min(), crop.shape[0] - 1 - ys.max()) >= 15
+
+
+def test_pairing_recovers_side_first_after_regular_window_with_belt_overlap():
+    pipeline = Pipeline(Settings(_env_file=None), MagicMock(), MagicMock(), MagicMock())
+    pipeline.session.batch_id = "batch"
+    paired = []
+    pipeline._store_paired_side = lambda slot: paired.append(slot["seq"])
+    image = np.zeros((24, 60, 3), np.uint8)
+    pipeline._pending_side.append({
+        "batch_id": "batch", "time": 10.0, "track_id": 5, "side": image, "belt_span": (0.22, 0.62),
+    })
+    pipeline._match_track_captures(10.6)
+    assert len(pipeline._pending_side) == 1
+    pipeline._pending_top.append({"batch_id": "batch", "time": 10.8, "seq": 3, "belt_span": (0.20, 0.65)})
+    pipeline._match_track_captures(11.9)
+    assert paired == [3]
