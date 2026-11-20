@@ -645,8 +645,8 @@ class SqliteStore(IdentityStore):
                     """
                     INSERT INTO parcel_identity
                         (id, batch_id, track_id, idx, status, sim_score, model_name, model_version,
-                         area, aspect_ratio, hu_moments, crop_ref, created_at)
-                    VALUES (?,?,?,?,'NEW',?,?,?,?,?,?,?,?)
+                         area, aspect_ratio, hu_moments, crop_ref, created_at, crop_ref_side)
+                    VALUES (?,?,?,?,'NEW',?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         self._next_identity_id(), kw["batch_id"],
@@ -660,6 +660,7 @@ class SqliteStore(IdentityStore):
                         json.dumps(kw["shape"].hu),
                         kw["crop_ref"],
                         self._now(),
+                        kw.get("crop_ref_side"),
                     ),
                 )
                 identity_id = cur.lastrowid

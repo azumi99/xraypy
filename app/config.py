@@ -120,8 +120,8 @@ PipelineMode = Literal["strip", "track"]
 class TrackRoiConfig(BaseModel):
     top_start: float = Field(default=0.03, ge=0, le=1, allow_inf_nan=False)
     top_end: float = Field(default=0.86, ge=0, le=1, allow_inf_nan=False)
-    side_start: float = Field(default=0.55, ge=0, le=1, allow_inf_nan=False)
-    side_end: float = Field(default=0.90, ge=0, le=1, allow_inf_nan=False)
+    side_start: float = Field(default=0.25, ge=0, le=1, allow_inf_nan=False)
+    side_end: float = Field(default=0.88, ge=0, le=1, allow_inf_nan=False)
 
     @model_validator(mode="after")
     def validate_bounds(self):

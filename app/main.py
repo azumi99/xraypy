@@ -19,6 +19,7 @@ from .awb.router import router as awb_router
 from .awb.service import AwbService
 from .config import Settings, load_settings
 from .db_tunnel import db_tunnel
+from .dedup.pg_store import PgVectorStore
 from .dedup.review import router as review_router
 from .dedup.service import DedupService
 from .dedup.store import IdentityStore, make_store
@@ -100,6 +101,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     await asyncio.sleep(5)
 
         sync_task = asyncio.create_task(supervise_photo_sync()) if photo_sync.enabled else None
+
+        def publish_waiting_change(warehouse: str) -> None:
+            runtime = getattr(app.state, "warehouse_runtimes", {}).get(warehouse)
+            if runtime is not None:
+                runtime.bus.publish_nowait("awb.waiting_changed", {})
+
+        app.state.awb_waiting_notifications = False
+
+        def set_waiting_notifications_available(available: bool) -> None:
+            app.state.awb_waiting_notifications = available
+            for runtime in getattr(app.state, "warehouse_runtimes", {}).values():
+                runtime.bus.publish_nowait("awb.waiting_live", {"available": available})
+
+        awb_task = (asyncio.create_task(store.listen_for_awb_waiting_changes(
+            publish_waiting_change, set_waiting_notifications_available,
+        )) if isinstance(store, PgVectorStore) else None)
         logger.info(
             "cv-service ready (model=%s store=%s mode=%s)",
             embedder.name,
@@ -107,9 +124,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             settings.pipeline_mode,
         )
         yield
-        if sync_task is not None:
-            sync_task.cancel()
-            await asyncio.gather(sync_task, return_exceptions=True)
+        background_tasks = [task for task in (sync_task, awb_task) if task is not None]
+        for task in background_tasks:
+            task.cancel()
+        await asyncio.gather(*background_tasks, return_exceptions=True)
         from .warehouse import warehouse_context
         for access, runtime in getattr(app.state, "warehouse_runtimes", {}).items():
             token = warehouse_context.set(access)

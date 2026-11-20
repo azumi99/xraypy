@@ -12,7 +12,7 @@ from app.detector import ParcelTracker
 from app.pipeline import Pipeline
 
 
-@pytest.mark.parametrize("view,start,end", [("top", 3, 86), ("side", 55, 90)])
+@pytest.mark.parametrize("view,start,end", [("top", 3, 86), ("side", 25, 88)])
 def test_track_roi_detection_display_and_capture(view, start, end):
     async def run():
         pipeline = Pipeline(Settings(), MagicMock(), MagicMock(), MagicMock())
@@ -72,7 +72,7 @@ def test_track_roi_config_environment_and_validation(monkeypatch):
     pipeline = Pipeline(Settings(), MagicMock(), MagicMock(), MagicMock())
     frame = np.arange(100, dtype=np.uint8).reshape(100, 1, 1)
     assert np.array_equal(pipeline._track_roi(frame, "top")[:, 0, 0], np.arange(20, 86))
-    assert np.array_equal(pipeline._track_roi(frame, "side")[:, 0, 0], np.arange(55, 80))
+    assert np.array_equal(pipeline._track_roi(frame, "side")[:, 0, 0], np.arange(25, 80))
     for kwargs in ({"top_start": -0.1}, {"side_end": 1.1}, {"top_start": float("nan")},
                    {"top_start": 0.86}, {"side_start": 0.95}):
         with pytest.raises(ValidationError):
@@ -90,6 +90,56 @@ def test_blob_near_bottom_of_track_roi_is_not_cut_off(view):
     detections = ParcelTracker(Settings().detector, backend).process(roi)
     assert len(detections) == 1
     assert detections[0].bbox[3] >= int(h * 0.95) - 2
+
+
+@pytest.mark.parametrize("clipped", [False, True])
+def test_side_wrapper_requires_boundary_inside_roi(clipped):
+    pipeline = Pipeline(Settings(_env_file=None), MagicMock(), MagicMock(), MagicMock())
+    frame = np.full((1000, 640, 3), 220, np.uint8)
+    roi = pipeline._track_roi(frame, "side")
+    roi[70:(len(roi) if clipped else 240), 80:360, 0] = 211
+    boxes = [(100, 85, 150, 160), (155, 120, 195, 195), (210, 90, 340, 220)]
+    backend = SimpleNamespace(process=lambda _: [SimpleNamespace(bbox=b, conf=0.9) for b in boxes])
+    detections = ParcelTracker(Settings(_env_file=None).detector, backend, side=True).process(roi)
+    assert sorted(d.bbox for d in detections) == (boxes if clipped else [(80, 70, 359, 239)])
+
+
+def test_side_roi_keeps_tall_parcel_above_scanner_footer():
+    settings = Settings(_env_file=None)
+    pipeline = Pipeline(settings, MagicMock(), MagicMock(), MagicMock())
+    frame = np.full((480, 720, 3), 220, np.uint8)
+    frame[260:422, 68:335, 0] = 211
+    frame[422:] = 40
+    start, end = pipeline._track_roi_rows(480, "side")
+    assert (start, end) == (120, 422)
+    boxes = [(76, 320, 319, 409), (87, 375, 211, 414),
+             (244, 371, 317, 410), (118, 267, 293, 321)]
+    backend = SimpleNamespace(process=lambda _: [
+        SimpleNamespace(bbox=(x1, y1 - start, x2, y2 - start), conf=0.9)
+        for x1, y1, x2, y2 in boxes
+    ])
+    result = ParcelTracker(settings.detector, backend, side=True).process(pipeline._track_roi(frame, "side"))
+    assert [d.bbox for d in result] == [(68, 260 - start, 334, 421 - start)]
+
+
+def test_side_roi_groups_internal_boxes_despite_background_gradient():
+    settings = Settings(_env_file=None)
+    pipeline = Pipeline(settings, MagicMock(), MagicMock(), MagicMock())
+    frame = np.full((480, 720, 3), 220, np.uint8)
+    frame[:, :10] = 0
+    frame[138:422, :380, 0] = 212  # Faint gradient connects the parcel to the viewport edge.
+    frame[140:422, 70:380, 0] = 202
+    frame[190:422, 90:370] = 130
+    frame[422:] = 40
+    boxes = [(95, 130, 230, 300), (205, 200, 365, 300)]
+    backend = SimpleNamespace(process=lambda _: [SimpleNamespace(bbox=box, conf=0.9) for box in boxes])
+    tracker = ParcelTracker(settings.detector, backend, side=True)
+    roi = pipeline._track_roi(frame, "side")
+
+    first, = tracker.process(roi)
+    second, = tracker.process(roi)
+    assert first.bbox == second.bbox == (70, 20, 379, 301)
+    assert first.parcel_id == second.parcel_id
 
 
 @pytest.mark.parametrize("view,row,level", [("top", 40, 220), ("side", 80, 195)])
@@ -151,7 +201,11 @@ async def test_side_reference_merge_before_ids_keeps_raw_capture(mode, tmp_path,
     original = frame.copy()
     await pipeline._process_track_frame({"side": frame})
     first_ids = set(pipeline._side_track_states)
-    await pipeline._process_track_frame({"side": frame})
+    boxes[:] = [(x1 + 3, y1, x2 + 3, y2) for x1, y1, x2, y2 in boxes]
+    moved_frame = frame.copy()
+    moved_frame[490:550, 199:235] = 220
+    moved_frame[490:550, 202:235, 0] -= 9
+    await pipeline._process_track_frame({"side": moved_frame})
     assert set(pipeline._side_track_states) == first_ids
     assert len(first_ids) == (1 if mode == "enabled" else 2)
     assert all(state["hits"] == 2 for state in pipeline._side_track_states.values())
@@ -159,7 +213,8 @@ async def test_side_reference_merge_before_ids_keeps_raw_capture(mode, tmp_path,
     assert len(pipeline._pending_side) == 1
     candidate = pipeline._pending_side[0]
     assert candidate["batch_id"] == "batch"
-    expected = roi[43:298, 25:375] if mode == "enabled" else roi[86:293, 45:219]
+    moved_roi = moved_frame[360:660]
+    expected = moved_roi[43:298, 28:378] if mode == "enabled" else moved_roi[86:293, 48:222]
     np.testing.assert_array_equal(candidate["side"], expected)
     np.testing.assert_array_equal(frame, original)
     if mode in {"enabled", "preview-only"}:

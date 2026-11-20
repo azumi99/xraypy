@@ -99,7 +99,7 @@ def test_side_box_uses_its_own_detection(tmp_path):
         frame = np.zeros((100, 200, 3), dtype=np.uint8)
         await pipeline._process_track_frame({"top": frame, "side": frame})
         assert pipeline._annotated_side.shape == frame.shape
-        assert pipeline._annotated_side[65, 40].any()
+        assert pipeline._annotated_side[35, 40].any()
 
     asyncio.run(run())
 
@@ -137,8 +137,13 @@ def test_independent_side_pairing_and_color_crops(tmp_path, monkeypatch):
         dedup = MagicMock()
         dedup.store.get_by_track = AsyncMock(return_value=None)
         dedup.worker.embed = AsyncMock(return_value=None)
-        dedup.store.add_side_capture = AsyncMock()
         gates = {1: asyncio.Event(), 2: asyncio.Event()}
+        saved = {1: asyncio.Event(), 2: asyncio.Event()}
+
+        async def add_side_capture(parcel_id, *_args, **_kwargs):
+            saved[parcel_id].set()
+
+        dedup.store.add_side_capture = AsyncMock(side_effect=add_side_capture)
 
         async def process_parcel(**kwargs):
             await gates[kwargs["track_id"]].wait()
@@ -152,7 +157,10 @@ def test_independent_side_pairing_and_color_crops(tmp_path, monkeypatch):
         pipeline._apply_decision = AsyncMock()
         top = np.zeros((100, 400, 3), dtype=np.uint8)
         side = np.full((100, 400, 3), (12, 34, 56), dtype=np.uint8)
-        det = lambda i, x: SimpleNamespace(parcel_id=i, bbox=(x, 10, x + 80, 80), conf=0.9)
+
+        def det(i, x):
+            return SimpleNamespace(parcel_id=i, bbox=(x, 10, x + 80, 80), conf=0.9)
+
         top_frames = iter([[det(1, 0)], [det(1, 40)], [det(2, 0)], [det(2, 40)]])
         side_frames = iter([[det(10, 0)], [det(10, 40)], [], [det(20, 0)], [det(20, 40)]])
         pipeline._detector = SimpleNamespace(process=lambda _: next(top_frames))
@@ -178,9 +186,9 @@ def test_independent_side_pairing_and_color_crops(tmp_path, monkeypatch):
         pipeline._pending_side[1]["time"] = base + 10
         pipeline._match_track_captures(base + 12)
         gates[2].set()
-        await asyncio.sleep(0.05)
+        await asyncio.wait_for(saved[2].wait(), timeout=3)
         gates[1].set()
-        await asyncio.sleep(0.1)
+        await asyncio.wait_for(saved[1].wait(), timeout=3)
         calls = dedup.store.add_side_capture.await_args_list
         assert {c.args[0]: c.args[2] for c in calls} == {
             1: "batch/seq_1_side.png", 2: "batch/seq_2_side.png"
@@ -489,3 +497,137 @@ def test_atomic_capture_write_failures_preserve_files(tmp_path, monkeypatch):
         _save_capture(path, image, "top", owned=owned)
     assert path.read_bytes() == original
     assert list(tmp_path.iterdir()) == [path]
+
+
+async def test_flat_side_capture_waits_until_parcel_clears_left_edge():
+    settings = Settings(_env_file=None)
+    pipeline = Pipeline(settings, MagicMock(), MagicMock(), MagicMock())
+    pipeline.session.batch_id = "batch"
+    backend = SimpleNamespace(process=lambda _: [])
+    pipeline._side_detector = ParcelTracker(settings.detector, backend, side=True)
+
+    def side_frame(left, right):
+        frame = np.full((480, 720, 3), 220, np.uint8)
+        frame[380:422, left:right] = (150, 230, 240)
+        frame[422:] = 40
+        return frame
+
+    for frame in (side_frame(0, 565), side_frame(0, 590), side_frame(0, 600)):
+        await pipeline._process_side_track_frame(frame)
+        assert not pipeline._pending_side
+
+    for frame in (side_frame(12, 612), side_frame(24, 624)):
+        await pipeline._process_side_track_frame(frame)
+        assert len(pipeline._pending_side) == 1
+
+    crop = pipeline._pending_side[0]["side"]
+    assert tuple(crop[-1, crop.shape[1] // 2]) == (150, 230, 240)
+
+
+@pytest.mark.parametrize("positions", [[40, 40, 40], [55, 50, 45]])
+async def test_side_capture_requires_rightward_motion(positions):
+    pipeline = Pipeline(Settings(_env_file=None), MagicMock(), MagicMock(), MagicMock())
+    boxes = iter(positions)
+
+    def detect(_):
+        x = next(boxes)
+        return [SimpleNamespace(parcel_id=1, bbox=(x, 50, x + 120, 100), conf=0.9)]
+
+    pipeline._side_detector = SimpleNamespace(process=detect)
+    for _ in positions:
+        await pipeline._process_side_track_frame(np.full((480, 720, 3), 220, np.uint8))
+    assert not pipeline._pending_side
+
+
+@pytest.mark.parametrize("side_delay", [0.0, 0.75])
+async def test_top_capture_saves_visible_side_when_side_trigger_misses(tmp_path, side_delay):
+    settings = Settings(_env_file=None, crop_dir=tmp_path)
+    dedup = MagicMock(photo_sync=None)
+    dedup.store.get_by_track = AsyncMock(return_value=None)
+    dedup.store.add_side_capture = AsyncMock()
+    dedup.worker.embed = AsyncMock(return_value=None)
+    record = SimpleNamespace(id=7, batch_id="batch", track_id=1, crop_ref="batch/seq_1_top.png", awb_id=None)
+    dedup.process_parcel = AsyncMock(return_value=SimpleNamespace(record=record, awb=None))
+    pipeline = Pipeline(settings, dedup, MagicMock(), MagicMock())
+    pipeline.session.batch_id = "batch"
+    pipeline._apply_decision = AsyncMock()
+    saved = asyncio.Event()
+    save_side_capture = pipeline._save_side_capture
+
+    async def save_side(slot, image):
+        await save_side_capture(slot, image)
+        saved.set()
+
+    pipeline._save_side_capture = save_side
+    top_boxes = iter([(0, 10, 80, 100), (45, 10, 125, 100)])
+    pipeline._detector = SimpleNamespace(process=lambda _: [
+        SimpleNamespace(parcel_id=1, bbox=next(top_boxes), conf=0.9),
+    ])
+    pipeline._side_detector = SimpleNamespace(process=lambda _: [
+        SimpleNamespace(parcel_id=2, bbox=(180, 30, 350, 95), conf=0.9),
+    ])
+    top = np.zeros((200, 400, 3), dtype=np.uint8)
+    side = np.full_like(top, (12, 34, 56))
+    for _ in range(2):
+        await pipeline._process_track_frame({"top": top})
+    top_seconds = pipeline._pending_top[0]["time"]
+    pipeline._match_track_captures(top_seconds + side_delay)
+    assert len(pipeline._pending_top) == 1
+    await pipeline._process_side_track_frame(side, top_seconds + side_delay, "batch")
+    assert not pipeline._pending_side  # Side track first appeared past the entry zone.
+    pipeline._match_track_captures(top_seconds + side_delay + 2 * settings.capture.pairing_max_skew_s + 0.1)
+    await asyncio.wait_for(saved.wait(), timeout=3)
+
+    dedup.store.add_side_capture.assert_awaited_once()
+    path = tmp_path / "batch/seq_1_side.png"
+    assert tuple(cv2.imread(str(path), cv2.IMREAD_UNCHANGED)[0, 0]) == (12, 34, 56, 255)
+    assert (tmp_path / "batch/seq_1_top.png").exists()
+    assert not pipeline._side_capture_samples
+
+
+async def test_missing_side_leaves_awb_waiting(tmp_path):
+    settings = Settings(_env_file=None, crop_dir=tmp_path)
+    dedup = MagicMock()
+    dedup.store.get_by_track = AsyncMock(return_value=None)
+    dedup.process_parcel = AsyncMock()
+    pipeline = Pipeline(settings, dedup, MagicMock(), MagicMock())
+    pipeline.session.batch_id = "batch"
+    done = asyncio.Event()
+    capture = pipeline._capture_with_effect
+
+    async def capture_and_signal(*args):
+        await capture(*args)
+        done.set()
+
+    pipeline._capture_with_effect = capture_and_signal
+    boxes = iter([(0, 10, 80, 100), (45, 10, 125, 100)])
+    pipeline._detector = SimpleNamespace(process=lambda _: [
+        SimpleNamespace(parcel_id=1, bbox=next(boxes), conf=0.9),
+    ])
+    top = np.zeros((200, 400, 3), dtype=np.uint8)
+    for _ in range(2):
+        await pipeline._process_track_frame({"top": top})
+    top_time = pipeline._pending_top[0]["time"]
+    pipeline._match_track_captures(top_time + 2 * settings.capture.pairing_max_skew_s + 0.1)
+    await asyncio.wait_for(done.wait(), timeout=3)
+
+    assert (tmp_path / "batch/seq_1_top.png").exists()
+    dedup.process_parcel.assert_not_awaited()
+
+
+def test_pairing_resolves_competing_top_detections_by_belt_position():
+    pipeline = Pipeline(Settings(_env_file=None), MagicMock(), MagicMock(), MagicMock())
+    pipeline.session.batch_id = "batch"
+    paired = []
+    pipeline._store_paired_side = lambda slot: paired.append(slot["seq"])
+    pipeline._pending_top.extend([
+        {"batch_id": "batch", "time": 10.0, "seq": 3, "belt_span": (0.15, 0.65)},
+        {"batch_id": "batch", "time": 10.2, "seq": 4, "belt_span": (0.45, 0.66)},
+    ])
+    pipeline._pending_side.append({
+        "batch_id": "batch", "time": 10.1, "track_id": 5,
+        "belt_span": (0.16, 0.64), "side": np.zeros((20, 40, 3), np.uint8),
+    })
+    pipeline._match_track_captures(12.0)
+
+    assert paired == [3]

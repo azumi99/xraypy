@@ -5,18 +5,21 @@ from unittest.mock import AsyncMock
 
 import cv2
 import numpy as np
+import pytest
 
 from app.events import EventBus
 from app.ws import stream as ws_module
 
 
-async def test_awb_event_delivered_without_video_frames(monkeypatch):
+@pytest.mark.parametrize("notifications", [False, True])
+async def test_awb_event_delivered_without_video_frames(monkeypatch, notifications):
     bus = EventBus()
     original_subscribe = bus.subscribe
 
     def subscribe():
         queue = original_subscribe()
-        queue.put_nowait({"type": "awb.inserted", "awb": {"id": 1}})
+        event = {"type": "awb.waiting_changed"} if notifications else {"type": "awb.inserted", "awb": {"id": 1}}
+        queue.put_nowait(event)
         return queue
 
     monkeypatch.setattr(bus, "subscribe", subscribe)
@@ -29,11 +32,17 @@ async def test_awb_event_delivered_without_video_frames(monkeypatch):
 
     async def send_json(event):
         sent.append(event)
-        raise RuntimeError("client disconnected")
+        if event["type"] != "awb.waiting_live":
+            raise RuntimeError("client disconnected")
 
-    socket = SimpleNamespace(app=object(), accept=AsyncMock(), send_json=send_json)
+    state = SimpleNamespace(awb_waiting_notifications=notifications)
+    socket = SimpleNamespace(app=SimpleNamespace(state=state), accept=AsyncMock(), send_json=send_json)
     await asyncio.wait_for(ws_module.stream(socket), timeout=1)
-    assert sent == [{"type": "awb.inserted", "awb": {"id": 1}}]
+    expected = (
+        [{"type": "awb.waiting_live", "available": True}, {"type": "awb.waiting_changed"}]
+        if notifications else [{"type": "awb.inserted", "awb": {"id": 1}}]
+    )
+    assert sent == expected
 
 
 async def test_side_frame_is_streamed_without_top_frame(monkeypatch):

@@ -1,5 +1,5 @@
-from types import SimpleNamespace
 import logging
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -168,9 +168,10 @@ def test_nested_detections_group_before_adjacent_pairs_in_both_views():
         backend = SimpleNamespace(process=lambda _: [SimpleNamespace(bbox=b, conf=0.9) for b in boxes])
         t = ParcelTracker(DetectorConfig(), backend, side=side)
         first, second = t.process(frame), t.process(frame)
-        assert sorted(d.bbox for d in first) == [(100, 100, 153, 135),
-                                                  (250, 100, 303, 135),
-                                                  (450, 100, 500, 150)]
+        expected = ([(100, 100, 125, 135), (128, 100, 153, 135),
+                     (250, 100, 275, 135), (278, 100, 303, 135)] if side else
+                    [(100, 100, 153, 135), (250, 100, 303, 135)])
+        assert sorted(d.bbox for d in first) == expected + [(450, 100, 500, 150)]
         assert {d.parcel_id for d in first} == {d.parcel_id for d in second}
 
 
@@ -180,7 +181,7 @@ def test_duplicate_cluster_does_not_chain_beyond_outer_detection():
 
 
 def test_grouped_side_detection_persists_briefly_without_observation():
-    boxes = [(100, 100, 125, 135), (105, 105, 120, 130), (128, 100, 153, 135)]
+    boxes = [(100, 100, 153, 135), (105, 105, 120, 130), (128, 100, 150, 135)]
     backend = SimpleNamespace(process=lambda _: [SimpleNamespace(bbox=b, conf=0.9) for b in boxes])
     side = ParcelTracker(DetectorConfig(), backend, side=True)
     frame = np.full((360, 640, 3), 220, np.uint8)
@@ -190,6 +191,51 @@ def test_grouped_side_detection_persists_briefly_without_observation():
     assert len(first) == len(missed) == 1
     assert missed[0].bbox == first[0].bbox == (100, 100, 153, 135)
     assert missed[0].parcel_id == first[0].parcel_id and not missed[0].observed
+
+
+@pytest.mark.parametrize("shared", [True, False])
+def test_side_multiple_contents_need_visible_shared_wrapper(shared):
+    frame = np.full((360, 640, 3), 220, np.uint8)
+    if shared:
+        frame[70:240, 80:360, 0] = 211
+    else:
+        frame[70:240, 80:200, 0] = 211
+        frame[70:240, 204:360, 0] = 211
+    boxes = [(100, 85, 150, 160), (155, 120, 195, 195), (210, 90, 340, 220)]
+    backend = SimpleNamespace(process=lambda _: [SimpleNamespace(bbox=b, conf=0.9) for b in boxes])
+    result = ParcelTracker(DetectorConfig(), backend, side=True).process(frame)
+    assert sorted(d.bbox for d in result) == ([(80, 70, 359, 239)] if shared else
+                                                [(80, 70, 199, 239), boxes[2]])
+
+
+@pytest.mark.parametrize("layout", ["vertical", "grid"])
+def test_side_wrapper_encloses_multiple_stacked_contents(layout):
+    frame = np.full((360, 640, 3), 220, np.uint8)
+    frame[45:300, 60:400, 0] = 211
+    boxes = ([(190, 90, 230, 125), (190, 145, 230, 180), (190, 200, 230, 235), (190, 250, 230, 280)]
+             if layout == "vertical" else
+             [(120, 90, 160, 125), (260, 90, 300, 125), (120, 210, 160, 245), (260, 210, 300, 245)])
+    for x1, y1, x2, y2 in boxes:
+        frame[y1:y2, x1:x2] = 90
+    backend = SimpleNamespace(process=lambda _: [SimpleNamespace(bbox=b, conf=0.9) for b in boxes])
+    t = ParcelTracker(DetectorConfig(), backend, side=True)
+    first, = t.process(frame)
+    second, = t.process(frame)
+    assert first.bbox == second.bbox == (60, 45, 399, 299)
+    assert first.parcel_id == second.parcel_id
+
+
+def test_side_two_adjacent_wrappers_with_multiple_contents_remain_separate():
+    frame = np.full((360, 640, 3), 220, np.uint8)
+    frame[50:290, 40:290, 0] = 211
+    frame[50:290, 300:550, 0] = 211
+    boxes = [(100, 90, 140, 125), (100, 200, 140, 235),
+             (360, 90, 400, 125), (360, 200, 400, 235)]
+    for x1, y1, x2, y2 in boxes:
+        frame[y1:y2, x1:x2] = 90
+    backend = SimpleNamespace(process=lambda _: [SimpleNamespace(bbox=b, conf=0.9) for b in boxes])
+    result = ParcelTracker(DetectorConfig(), backend, side=True).process(frame)
+    assert sorted(d.bbox for d in result) == [(40, 50, 289, 289), (300, 50, 549, 289)]
 
 
 def test_partially_overlapping_backend_boxes_stay_separate():
@@ -308,9 +354,27 @@ def test_wrapper_uses_faint_raw_edges_before_assigning_ids(wrapper, side):
         assert sorted(d.bbox for d in result) == boxes
 
 
-def test_side_wrapper_cut_by_roi_is_not_merged():
+def test_side_wrapper_touching_belt_merges():
     frame = np.full((205, 640, 3), 220, np.uint8)
     frame[90:, 90:290, 0] = 211
+    boxes = [(100, 100, 175, 195), (200, 100, 280, 195)]
+    backend = SimpleNamespace(process=lambda _: [SimpleNamespace(bbox=b, conf=0.9) for b in boxes])
+    result = ParcelTracker(DetectorConfig(), backend, side=True).process(frame)
+    assert [d.bbox for d in result] == [(90, 90, 289, 204)]
+
+
+def test_side_boxes_resting_on_belt_merge():
+    frame = np.full((205, 640, 3), 220, np.uint8)
+    frame[90:, 90:290, 0] = 211
+    boxes = [(100, 100, 175, 204), (200, 100, 280, 204)]
+    backend = SimpleNamespace(process=lambda _: [SimpleNamespace(bbox=b, conf=0.9) for b in boxes])
+    result = ParcelTracker(DetectorConfig(), backend, side=True).process(frame)
+    assert [d.bbox for d in result] == [(90, 90, 289, 204)]
+
+
+def test_side_wrapper_flood_is_rejected():
+    frame = np.full((360, 640, 3), 220, np.uint8)
+    frame[60:, 90:290, 0] = 211
     boxes = [(100, 100, 175, 195), (200, 100, 280, 195)]
     backend = SimpleNamespace(process=lambda _: [SimpleNamespace(bbox=b, conf=0.9) for b in boxes])
     result = ParcelTracker(DetectorConfig(), backend, side=True).process(frame)
@@ -418,3 +482,16 @@ def test_merge_diagnostics_are_opt_in_bounded_and_rate_limited(caplog, monkeypat
 def test_merge_diagnostics_environment(monkeypatch):
     monkeypatch.setenv("CV_DETECTOR__MERGE_DIAGNOSTICS", "true")
     assert Settings().detector.merge_diagnostics
+
+
+def test_side_detects_flat_parcel_by_color_without_detecting_scanner_footer():
+    frame = np.full((360, 640, 3), 220, np.uint8)
+    frame[320:341, 50:600] = (150, 230, 240)
+    frame[345:, 40:605] = (150, 230, 240)
+    backend = SimpleNamespace(process=lambda _: [])
+    cfg = DetectorConfig(viewport_bottom=0.95)
+    side = ParcelTracker(cfg, backend, side=True)
+
+    detection, = side.process(frame)
+    assert detection.bbox == (50, 320, 600, 341)
+    assert ParcelTracker(cfg, backend).process(frame) == []

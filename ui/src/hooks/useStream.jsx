@@ -8,6 +8,7 @@ export function useStream() {
   const [frames, setFrames] = useState({ top: null, side: null });
   const [overlays, setOverlays] = useState([]);
   const [connected, setConnected] = useState(false);
+  const [waitingEventsAvailable, setWaitingEventsAvailable] = useState(false);
   const [lastEvent, setLastEvent] = useState(null);
   const listeners = useRef(new Set());
 
@@ -18,11 +19,14 @@ export function useStream() {
       ws = new WebSocket(`${proto}://${location.host}/ws/stream`);
       ws.onopen = () => setConnected(true);
       ws.onclose = () => {
+        if (!active) return;
         setConnected(false);
-        if (active) timer = setTimeout(connect, 2000);
+        setWaitingEventsAvailable(false);
+        timer = setTimeout(connect, 2000);
       };
       ws.onmessage = (ev) => {
         const m = JSON.parse(ev.data);
+        if (m.type === "awb.waiting_live") setWaitingEventsAvailable(m.available === true);
         if (m.type === "frame") {
           setFrames({ top: m.data, side: m.side ?? null });
           setOverlays(m.overlays ?? []);
@@ -50,5 +54,5 @@ export function useStream() {
     return () => listeners.current.delete(fn);
   }, []);
 
-  return { frames, overlays, connected, lastEvent, onEvent };
+  return { frames, overlays, connected, waitingEventsAvailable, lastEvent, onEvent };
 }

@@ -123,7 +123,7 @@ function AuthenticatedApp({ user, onLogout, logoutError, logoutPending }) {
     try { return localStorage.getItem("xray-theme") === "light" ? "light" : "dark"; }
     catch { return "dark"; }
   });
-  const { frames, connected, onEvent } = useStream();
+  const { frames, connected, waitingEventsAvailable, onEvent } = useStream();
 
   const refreshSession = useCallback(async () => {
     setSession(await api("/session/state").catch(() => null));
@@ -214,7 +214,7 @@ function AuthenticatedApp({ user, onLogout, logoutError, logoutPending }) {
         <main className="p-4 sm:px-7 pb-7 w-full min-w-0">
           {activePath === "/dashboard" && <Suspense fallback={<div className="panel muted">Memuat dashboard…</div>}><Dashboard session={session} onEvent={onEvent} /></Suspense>}
           {activePath === "/live" && (
-            <LiveTab warehouse={user.access} frames={frames} session={session} onSessionChange={refreshSession} onEvent={onEvent} />
+            <LiveTab warehouse={user.access} frames={frames} session={session} onSessionChange={refreshSession} onEvent={onEvent} connected={connected} waitingEventsAvailable={waitingEventsAvailable} />
           )}
           {activePath === "/awb" && !awbDetailId && (
             <AwbTab onChanged={refreshSession} onOpenDetail={(id) => navigate(`/awb/${id}`)} onEvent={onEvent} connected={connected} />
