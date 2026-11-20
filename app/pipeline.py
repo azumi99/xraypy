@@ -564,10 +564,12 @@ class Pipeline:
     def _capture_ready(self, det, state: dict, shape: tuple[int, ...], *, side_belt_edge: bool = False) -> bool:
         h, w = shape[:2]
         x1, y1, x2, y2 = det.bbox
-        crop_pad = round((x2 - x1) * 0.15)
+        parcel_width = x2 - x1
+        crop_pad = round(parcel_width * 0.15)
         left_margin = max(w * self._settings.capture.top_capture_left_margin, crop_pad)
         right_margin = w * 6 / 640
-        if side_belt_edge and w - (x2 - x1) < 2 * left_margin + right_margin:
+        wide_flat = parcel_width >= 0.75 * w and parcel_width >= 4 * (y2 - y1)
+        if (side_belt_edge or wide_flat) and w - parcel_width < 2 * left_margin + right_margin:
             # A long parcel can be fully visible before there is room for its crop padding.
             left_margin = max(1, round(right_margin))
         bottom_visible = y2 < h - 1 or (side_belt_edge and y2 == h - 1)

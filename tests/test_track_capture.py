@@ -680,3 +680,22 @@ def test_pairing_recovers_side_first_after_regular_window_with_belt_overlap():
     pipeline._pending_top.append({"batch_id": "batch", "time": 10.8, "seq": 3, "belt_span": (0.20, 0.65)})
     pipeline._match_track_captures(11.9)
     assert paired == [3]
+
+
+async def test_wide_flat_top_capture_triggers_as_soon_as_both_ends_clear():
+    pipeline = Pipeline(Settings(_env_file=None), MagicMock(), MagicMock(), MagicMock())
+    pipeline.session.batch_id = "batch"
+    boxes = iter([(0, 210, 621, 302), (4, 210, 625, 302), (31, 210, 652, 302)])
+    pipeline._detector = SimpleNamespace(process=lambda _: [
+        SimpleNamespace(parcel_id=1, bbox=next(boxes), conf=0.9),
+    ])
+    pipeline._capture_with_effect = AsyncMock()
+    frame = np.zeros((480, 720, 3), np.uint8)
+    for _ in range(2):
+        await pipeline._process_track_frame({"top": frame})
+        assert not pipeline._pending_top
+
+    await pipeline._process_track_frame({"top": frame})
+    await asyncio.sleep(0)
+    pipeline._capture_with_effect.assert_awaited_once()
+    assert len(pipeline._pending_top) == 1
