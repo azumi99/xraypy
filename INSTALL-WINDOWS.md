@@ -92,3 +92,51 @@ Set-Location ..
 Setelah startup selesai, buka [halaman Live](http://127.0.0.1:8100/live). Login menggunakan akun gudang yang sudah dikonfigurasi. Pada database baru, akun bawaan adalah `bgd@paratekno.com` dan `cas@paratekno.com` dengan kata sandi awal dari `CV_BOOTSTRAP_PASSWORD`.
 
 Untuk uji Screen Share, pilih sumber video atas dan samping di halaman Live, lalu klik **Start Session**. Tekan **Ctrl+C** di terminal untuk menghentikan backend.
+
+## 7. Jalankan otomatis sebagai Windows service (NSSM)
+
+Agar backend menyala otomatis sesaat setelah PC boot (tanpa perlu login/manual), daftarkan sebagai Windows service memakai **NSSM**. Service berjalan sebagai `LocalSystem`, start otomatis, dan restart sendiri jika crash.
+
+### 7.1. Instal NSSM
+
+```powershell
+winget install --id NSSM.NSSM -e --accept-source-agreements --accept-package-agreements
+```
+
+### 7.2. Buat & start service
+
+Skrip siap pakai ada di `logs\install-cv-service.ps1`. Jalankan di **PowerShell as Administrator**:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\xraypy\logs\install-cv-service.ps1
+```
+
+Skrip ini mendaftarkan service `CVService` dengan konfigurasi:
+
+- App: `.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8100`
+- Direktori kerja: `C:\xraypy` (agar `.env` termuat).
+- `HF_HOME` diarahkan ke cache HuggingFace pengguna agar bobot `dinov2_small` tidak diunduh ulang.
+- Start type: `Automatic` (saat boot).
+- Restart otomatis jika aplikasi keluar/crash (`AppExit Default Restart` + kebijakan failure `sc.exe`).
+- Log: `C:\xraypy\logs\cv-service.out.log` dan `cv-service.err.log` (rotasi 10 MB / harian).
+
+Hasil akhir skrip tertulis di `logs\install-cv-service.sentinel` (`OK` bila port 8100 siap).
+
+### 7.3. Pengelolaan (PowerShell biasa)
+
+```powershell
+Get-Service CVService                                    # cek status
+Start-Service CVService
+Stop-Service CVService
+Restart-Service CVService
+Get-Content C:\xraypy\logs\cv-service.out.log -Tail 50 -Wait   # tail log live
+```
+
+Setelah service aktif, buka [halaman Live](http://127.0.0.1:8100/live).
+
+### 7.4. Uninstall (PowerShell as Administrator)
+
+```powershell
+$nssm = Get-ChildItem "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\NSSM.NSSM*\win64\nssm.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+& $nssm.FullName remove CVService confirm
+```
