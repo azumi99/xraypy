@@ -22,6 +22,10 @@ full Python, tanpa NestJS.
 4. Overlay web menampilkan status `tracking | saved | duplicate | review`;
    `index` null untuk duplicate/review (idx tidak pernah berlubang).
 
+## Instalasi Windows
+
+Lihat [panduan instalasi Windows](INSTALL-WINDOWS.md) untuk setup Python, venv, frontend, dan backend.
+
 ## Instalasi (macOS, CPU)
 
 ```bash
