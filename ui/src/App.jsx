@@ -213,9 +213,11 @@ function AuthenticatedApp({ user, onLogout, logoutError, logoutPending }) {
         </div>
         <main className="p-4 sm:px-7 pb-7 w-full min-w-0">
           {activePath === "/dashboard" && <Suspense fallback={<div className="panel muted">Memuat dashboard…</div>}><Dashboard session={session} onEvent={onEvent} /></Suspense>}
-          {activePath === "/live" && (
-            <LiveTab warehouse={user.access} frames={frames} session={session} onSessionChange={refreshSession} onEvent={onEvent} connected={connected} waitingEventsAvailable={waitingEventsAvailable} />
-          )}
+          <div hidden={activePath !== "/live"}>
+            <LiveTab key={user.access} warehouse={user.access} frames={frames} session={session}
+              visible={activePath === "/live"} onSessionChange={refreshSession} onEvent={onEvent}
+              connected={connected} waitingEventsAvailable={waitingEventsAvailable} />
+          </div>
           {activePath === "/awb" && !awbDetailId && (
             <AwbTab onChanged={refreshSession} onOpenDetail={(id) => navigate(`/awb/${id}`)} onEvent={onEvent} connected={connected} />
           )}

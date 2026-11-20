@@ -3,7 +3,7 @@ import api, { post } from "../api";
 import SourceSelect from "./SourceSelect";
 import { shouldRefreshAwbs } from "../awbEvents";
 
-export default function LiveTab({ warehouse, frames, session, onSessionChange, onEvent, connected, waitingEventsAvailable }) {
+export default function LiveTab({ warehouse, frames, session, onSessionChange, onEvent, connected, waitingEventsAvailable, visible }) {
   const topSource = useRef(null);
   const sideSource = useRef(null);
   const [starting, setStarting] = useState(false);
@@ -42,7 +42,7 @@ export default function LiveTab({ warehouse, frames, session, onSessionChange, o
   const waitingRequest = useRef(null);
   const requestVersion = useRef(0);
   const loadSources = async () => setSources(await api("/sources").catch(() => sources));
-  useEffect(() => { loadSources(); }, []);
+  useEffect(() => { if (visible) loadSources(); }, [visible]);
 
   const scheduleWaitingRefresh = useCallback((delay = 100) => {
     const version = ++requestVersion.current;
@@ -67,6 +67,7 @@ export default function LiveTab({ warehouse, frames, session, onSessionChange, o
   }, []);
 
   useEffect(() => {
+    if (!visible) return;
     scheduleWaitingRefresh(0);
     const unsubscribe = onEvent((event) => {
       if (!shouldRefreshAwbs(event)) return;
@@ -85,21 +86,21 @@ export default function LiveTab({ warehouse, frames, session, onSessionChange, o
       waitingRequest.current?.abort();
       waitingRequest.current = null;
     };
-  }, [onEvent, scheduleWaitingRefresh, warehouse]);
+  }, [onEvent, scheduleWaitingRefresh, visible, warehouse]);
   useEffect(() => {
-    if (connected) scheduleWaitingRefresh(0);
-  }, [connected, scheduleWaitingRefresh]);
+    if (visible && connected) scheduleWaitingRefresh(0);
+  }, [connected, scheduleWaitingRefresh, visible]);
 
   useEffect(() => {
     // Keep queues fresh during a socket outage or a rolling backend update.
-    if (waitingEventsAvailable) return;
+    if (!visible || waitingEventsAvailable) return;
     const poll = setInterval(() => {
       if (refreshTimer.current === null && waitingRequest.current === null) {
         scheduleWaitingRefresh(0);
       }
     }, 2000);
     return () => clearInterval(poll);
-  }, [waitingEventsAvailable, scheduleWaitingRefresh]);
+  }, [waitingEventsAvailable, scheduleWaitingRefresh, visible]);
 
   return (
     <div className="flex flex-wrap gap-5">

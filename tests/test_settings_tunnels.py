@@ -76,3 +76,38 @@ async def test_scan_start_and_tunnel_stop_cannot_race(monkeypatch):
     finally:
         warehouse_context.reset(token)
 import asyncio
+
+
+@pytest.mark.parametrize("warehouse", ["bgd", "cas"])
+async def test_sync_monitoring_only_reads_authenticated_warehouse(warehouse):
+    from app.warehouse import current_warehouse
+
+    app = FastAPI()
+    app.state.settings = SimpleNamespace(jwt_secret="test-secret")
+    app.include_router(router, prefix="/api")
+    reads = []
+
+    async def list_photo_references():
+        reads.append(current_warehouse())
+        return [f"{current_warehouse()}-photo.png"]
+
+    sync = MagicMock(enabled=True)
+    sync.status.return_value = {f"{warehouse}-photo.png": "synced"}
+    app.state.photo_sync = sync
+    app.state.store = SimpleNamespace(list_photo_references=list_photo_references)
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://test") as client:
+        assert (await client.get("/api/settings/sync")).status_code == 401
+        app.dependency_overrides[require_operator] = lambda: None
+        token = warehouse_context.set(warehouse)
+        try:
+            response = await client.get("/api/settings/sync")
+        finally:
+            warehouse_context.reset(token)
+
+    assert response.json() == {
+        "enabled": True,
+        "items": {warehouse: {"synced": 1, "pending": 0, "failed": 0, "unknown": 0, "total": 1}},
+    }
+    assert reads == [warehouse]
+    sync.status.assert_called_once_with(warehouse, [f"{warehouse}-photo.png"])

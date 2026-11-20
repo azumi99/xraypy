@@ -72,6 +72,7 @@ export default function SettingsTab({ warehouse }) {
   }
 
   const manifest = status?.manifest;
+  const warehouseSync = sync?.items?.[warehouse];
   return (
     <div className="max-w-4xl space-y-4">
       <p className="text-sm text-muted">Status koneksi diperbarui setiap 5 detik. Kontrol manifest hanya berlaku untuk warehouse Anda.</p>
@@ -94,22 +95,18 @@ export default function SettingsTab({ warehouse }) {
           <div><h3 id="sync-tunnel-title">Sinkronisasi Foto X-ray</h3><p className="text-sm text-muted">Foto lokal dikirim otomatis ke server per warehouse.</p></div>
           <strong role="status" className="rounded-full border border-[var(--border)] bg-[var(--bg-cream)] px-3 py-1 text-sm">{!sync ? "Tidak diketahui" : sync.enabled ? "Aktif" : "Nonaktif"}</strong>
         </div>
-        {sync?.enabled && (
-          <div className="mt-5 grid gap-4 sm:grid-cols-2">
-            {Object.entries(sync.items ?? {}).map(([site, item]) => (
-              <div key={site} className="rounded-xl border border-[var(--border)] bg-[var(--bg-cream)] p-4">
-                <div className="flex items-center justify-between">
-                  <strong>{site.toUpperCase()}</strong>
-                  <span className="muted text-xs">{item.total} foto</span>
-                </div>
-                <div className="mt-3 flex flex-wrap gap-3 text-xs">
-                  <span className="text-ok font-bold">✓ {item.synced} tersinkron</span>
-                  <span className="st-waiting font-bold">⏳ {item.pending} menunggu</span>
-                  <span className="text-bad font-bold">✗ {item.failed} gagal</span>
-                  <span className="muted font-bold">? {item.unknown} belum terdaftar</span>
-                </div>
-              </div>
-            ))}
+        {sync?.enabled && warehouseSync && (
+          <div className="mt-5 rounded-xl border border-[var(--border)] bg-[var(--bg-cream)] p-4">
+            <div className="flex items-center justify-between">
+              <strong>{warehouse.toUpperCase()}</strong>
+              <span className="muted text-xs">{warehouseSync.total} foto</span>
+            </div>
+            <div className="mt-3 flex flex-wrap gap-3 text-xs">
+              <span className="text-ok font-bold">✓ {warehouseSync.synced} tersinkron</span>
+              <span className="st-waiting font-bold">⏳ {warehouseSync.pending} menunggu</span>
+              <span className="text-bad font-bold">✗ {warehouseSync.failed} gagal</span>
+              <span className="muted font-bold">? {warehouseSync.unknown} belum terdaftar</span>
+            </div>
           </div>
         )}
       </section>

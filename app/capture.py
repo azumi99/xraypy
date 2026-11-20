@@ -373,9 +373,12 @@ class ScreenShareSource(FrameSource):
     """Single-view source fed by the browser via getDisplayMedia — the page
     pushes JPEG frames over /ws/push/{view} and we serve the latest one."""
 
+    STALE_AFTER_S = 1.0
+
     def __init__(self) -> None:
         self._frame: np.ndarray | None = None
         self._lock = threading.Lock()
+        self._received_at = 0.0
 
     def start(self) -> None:  # nothing to start; frames arrive via push()
         pass
@@ -389,9 +392,12 @@ class ScreenShareSource(FrameSource):
         if frame is not None:
             with self._lock:
                 self._frame = frame
+                self._received_at = time.monotonic()
 
     def read(self) -> np.ndarray | None:
         with self._lock:
+            if self._frame is not None and time.monotonic() - self._received_at >= self.STALE_AFTER_S:
+                self._frame = None
             return None if self._frame is None else self._frame.copy()
 
 

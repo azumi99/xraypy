@@ -75,6 +75,7 @@ async def stream(ws: WebSocket) -> None:
         if getattr(getattr(ws.app, "state", None), "awb_waiting_notifications", False):
             await ws.send_json({"type": "awb.waiting_live", "available": True})
         last_frame = 0.0
+        had_preview = False
         while True:
             if not authorized(ws):
                 await ws.close(code=1008)
@@ -88,11 +89,12 @@ async def stream(ws: WebSocket) -> None:
             if now - last_frame >= FRAME_INTERVAL_S:
                 frame = pipeline.latest_annotated() if pipeline is not None else None
                 side = pipeline.latest_annotated_side() if pipeline is not None else None
-                if frame is not None or side is not None:
+                has_preview = frame is not None or side is not None
+                if has_preview or had_preview:
                     msg: dict = {
                         "type": "frame",
                         "data": None,
-                        "overlays": pipeline.overlay_states() if pipeline else [],
+                        "overlays": pipeline.overlay_states() if frame is not None else [],
                     }
                     if frame is not None:
                         ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
@@ -103,6 +105,7 @@ async def stream(ws: WebSocket) -> None:
                         if ok2:
                             msg["side"] = base64.b64encode(buf2.tobytes()).decode("ascii")
                     await ws.send_json(msg)
+                had_preview = has_preview
                 last_frame = now
             if event is not None:
                 await ws.send_json(event)

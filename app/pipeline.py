@@ -307,6 +307,7 @@ class Pipeline:
             try:
                 frames = await asyncio.to_thread(self._sources.read_frames)
                 if frames is None:
+                    self._annotated = self._annotated_side = None
                     self._match_track_captures(time.monotonic())
                     await asyncio.sleep(interval)
                     continue
@@ -352,6 +353,8 @@ class Pipeline:
         for parcel in new_parcels:
             asyncio.create_task(self._handle_new_parcel(parcel, roi.shape, roi_side, captured_at))
         self._annotate(top, roi.shape, roi_side)
+        if roi_side is None:
+            self._annotated_side = None
 
     def _sync_overlays(self) -> None:
         """Live tracking: posisi & ukuran overlay mengikuti known objects
@@ -589,6 +592,8 @@ class Pipeline:
             self._annotated = None
             if side is not None:
                 await self._process_side_track_frame(side, captured_at, batch_id)
+            else:
+                self._annotated_side = None
             return
         full_top = top
         top_shape = full_top.shape
