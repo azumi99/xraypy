@@ -113,9 +113,9 @@ class _Tunnel:
                     except TimeoutError:
                         continue
                     threading.Thread(target=self._forward, args=(sock, address, transport, stop), daemon=True).start()
-            except Exception:
+            except Exception as _e:
                 if not stop.is_set():
-                    logger.warning("SSH tunnel unavailable; retrying")
+                    logger.warning("SSH tunnel unavailable; retrying: %s: %s", type(_e).__name__, _e)
             finally:
                 with self.lock:
                     if self.stop_event is stop:
