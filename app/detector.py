@@ -455,67 +455,139 @@ def _merge_reference_fragments(
 
 
 def _wrapper_box(frame: np.ndarray, left: tuple[int, int, int, int],
-                 right: tuple[int, int, int, int], weak: int) -> tuple[int, int, int, int] | None:
+                 right: tuple[int, int, int, int], weak: int, *, side: bool = False) -> tuple[int, int, int, int] | None:
     h, w = frame.shape[:2]
-    x1, y1 = left[0], min(left[1], right[1])
-    x2, y2 = right[2], max(left[3], right[3])
+    x1, y1 = min(left[0], right[0]), min(left[1], right[1])
+    x2, y2 = max(left[2], right[2]), max(left[3], right[3])
     padx, pady = max(6, round(24 * w / 640)), max(6, round(24 * h / 360))
     x0, y0 = max(0, x1 - padx), max(0, y1 - pady)
-    if x0 >= x1 or y0 >= y1 or x2 >= w - 1 or y2 >= h - 1:
+    if x0 >= x1 or y0 >= y1 or x2 >= w - 1 or (not side and y2 >= h - 1):
         return None
-    patch = frame[y0:y2 + pady + 1, x0:x2 + padx + 1].astype(np.int16)
-    border = np.concatenate((patch[0], patch[-1], patch[:, 0], patch[:, -1]))
+    bottom_clipped = side and y2 >= h - 1
+    if side:
+        x0, y0 = 0, 0
+        patch = frame.astype(np.int16)
+        # Parcels rest on the belt covering the bottom rows: estimate the belt
+        # background from the empty tunnel rows at the top of the side ROI.
+        border = patch[: max(3, h // 20)].reshape(-1, 3)
+    else:
+        patch = frame[y0:y2 + pady + 1, x0:x2 + padx + 1].astype(np.int16)
+        border = np.concatenate((patch[0], patch[-1], patch[:, 0], patch[:, -1]))
     background = np.median(border, axis=0)
     if np.percentile(np.abs(border - background).max(axis=1), 90) >= weak:
         return None
-    mask = ((background - patch).max(axis=2) >= weak).astype(np.uint8)
-    # Opening removes thin bridges without closing the gap between separate parcels.
-    k = max(3, round(5 * w / 640) | 1)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((k, k), np.uint8))
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    for contour in contours:
-        x, y, bw, bh = cv2.boundingRect(contour)
-        if x == 0 or y == 0 or x + bw == patch.shape[1] or y + bh == patch.shape[0]:
-            continue
-        outer = (x + x0, y + y0, x + x0 + bw - 1, y + y0 + bh - 1)
-        if not (outer[0] < x1 and outer[1] < y1 and outer[2] > x2 and outer[3] > y2):
-            continue
-        if all(cv2.pointPolygonTest(contour, ((a + c) / 2 - x0, (b + d) / 2 - y0), False) > 0
-               for a, b, c, d in (left, right)):
-            return outer
+    contrast = (background - patch).max(axis=2)
+    # Suppress stronger background gradients if the faint mask reaches the viewport edge.
+    for threshold in ((weak, 2 * weak) if side else (weak,)):
+        mask = (contrast >= threshold).astype(np.uint8)
+        # Opening removes thin bridges without closing the gap between separate parcels.
+        k = max(3, round(5 * w / 640) | 1)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((k, k), np.uint8))
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        for contour in contours:
+            x, y, bw, bh = cv2.boundingRect(contour)
+            if x == 0 or y == 0 or x + bw == patch.shape[1]:
+                continue
+            if side:
+                # A belt-resting wrapper may touch the bottom; reject near-full floods.
+                full_height = bh > 0.75 * h and not (y < 0.1 * h and y + bh == h)
+                if bw > 0.92 * w or full_height:
+                    continue
+            elif y + bh == patch.shape[0]:
+                continue
+            outer = (x + x0, y + y0, x + x0 + bw - 1, y + y0 + bh - 1)
+            if not (outer[0] < x1 and outer[1] < y1 and outer[2] > x2
+                    and (outer[3] >= y2 if bottom_clipped else outer[3] > y2)):
+                continue
+            if all(cv2.pointPolygonTest(contour, ((a + c) / 2 - x0, (b + d) / 2 - y0), False) > 0
+                   for a, b, c, d in (left, right)):
+                return outer
     return None
 
 
 def _merge_wrappers(boxes: list[tuple[int, int, int, int]], frame: np.ndarray, weak: int,
-                    *, diagnostic_view: str | None = None) -> list[tuple[int, int, int, int]]:
+                    *, diagnostic_view: str | None = None, side: bool = False) -> list[tuple[int, int, int, int]]:
     w = frame.shape[1]
     proposals = []
     counts = [0] * len(boxes)
     for i, a in enumerate(boxes):
         for j in range(i + 1, len(boxes)):
             left, right = sorted((a, boxes[j]), key=lambda box: box[0])
-            if left[0] == right[0] or right[2] <= left[2]:
+            if not side and (left[0] == right[0] or right[2] <= left[2]):
                 continue
             gap = right[0] - left[2]
-            if abs(gap) > min(40 * w / 640, 0.35 * min(left[2] - left[0], right[2] - right[0])):
+            if not side and abs(gap) > min(40 * w / 640, 0.35 * min(left[2] - left[0], right[2] - right[0])):
                 continue
             overlap = min(left[3], right[3]) - max(left[1], right[1])
-            if overlap < 0.6 * max(left[3] - left[1], right[3] - right[1]):
+            if not side and overlap < 0.6 * max(left[3] - left[1], right[3] - right[1]):
                 continue
-            outer = _wrapper_box(frame, left, right, weak)
-            if outer is None or any(k not in (i, j) and _iou(*outer, *box) > 0 for k, box in enumerate(boxes)):
+            outer = _wrapper_box(frame, left, right, weak, side=side)
+            if outer is None:
                 continue
-            proposals.append((i, j, outer))
-            counts[i] += 1
-            counts[j] += 1
+            members = tuple(k for k, box in enumerate(boxes) if _mostly_contained(box, outer))
+            if not side and len(members) != 2:
+                continue
+            if any(k not in members and _iou(*outer, *box) > 0 for k, box in enumerate(boxes)):
+                continue
+            proposal = (members, outer)
+            if proposal not in proposals:
+                proposals.append(proposal)
+                for k in members:
+                    counts[k] += 1
     merged, used = {}, set()
-    for i, j, outer in proposals:
-        if counts[i] == counts[j] == 1:
+    for members, outer in proposals:
+        if all(counts[k] == 1 for k in members):
+            i, *others = members
             merged[i] = outer
-            used.add(j)
+            used.update(others)
             if diagnostic_view is not None:
-                logger.info("%s_wrapper_merge boxes=%s,%s outer=%s", diagnostic_view, boxes[i], boxes[j], outer)
+                logger.info("%s_wrapper_merge boxes=%s outer=%s", diagnostic_view, [boxes[k] for k in members], outer)
     return [merged.get(i, box) for i, box in enumerate(boxes) if i not in used]
+
+
+def side_capture_silhouettes(frame: np.ndarray) -> list[tuple[int, int, int, int]]:
+    """Find capture silhouettes, including components that still touch an edge."""
+    h, w = frame.shape[:2]
+    band = frame[:max(3, h // 20)].astype(np.int16)
+    background = np.median(band, axis=0)
+    if np.median(background) < 100:
+        return []
+    variation = np.percentile(np.abs(band - background).max(axis=2), 90)
+    if variation > 20:
+        return []
+    contrast = (background - frame).max(axis=2)
+    mask = (contrast >= max(12, round(2 * variation))).astype(np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    silhouettes = []
+    for contour in contours:
+        x, y, width, height = cv2.boundingRect(contour)
+        if width >= w * 0.025 and height >= h * 0.025 and cv2.contourArea(contour) >= width * height * 0.25:
+            silhouettes.append((x, y, x + width - 1, y + height - 1))
+    return silhouettes
+
+
+def _side_flat_blobs(frame: np.ndarray, viewport_end: int) -> list[tuple[int, int, int, int]]:
+    """Find long, low-profile parcels whose X-ray color survives weak grayscale contrast."""
+    small = cv2.resize(frame, (640, 360))
+    chroma = np.ptp(small, axis=2)
+    background = np.median(chroma[3:14])
+    mask = (chroma >= background + 14).astype(np.uint8)
+    mask[viewport_end:] = 0
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((5, 3), np.uint8))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    blobs = []
+    for contour in contours:
+        x, y, width, height = cv2.boundingRect(contour)
+        if (width < 80 or height < 8 or width < 4 * height or y < viewport_end // 2
+                or width >= 0.95 * 640 or cv2.contourArea(contour) < 0.7 * width * height):
+            continue
+        # Ignore sparse pixels at the ends of the silhouette, including belt-edge noise.
+        rows = np.flatnonzero(mask[y:y + height, x:x + width].sum(axis=1) >= 0.25 * width)
+        if rows.size >= 8:
+            blobs.append((x, y + int(rows[0]), width, int(rows[-1] - rows[0] + 1)))
+    return blobs
 
 
 def _snap_profile(strip: np.ndarray, min_ratio: float = 2.0) -> int | None:
@@ -607,16 +679,22 @@ class ParcelTracker:
         self._next_pid = 1
         self._backend.reset()
 
-    def process(self, frame_bgr: np.ndarray, *, reference_delta: np.ndarray | None = None) -> list[ParcelDetection]:
+    def process(self, frame_bgr: np.ndarray, *, reference_delta: np.ndarray | None = None,
+                raw_boxes: list | None = None) -> list[ParcelDetection]:
         dets = self._backend.process(frame_bgr)
         if self._side:
             dets = [d for d in dets if getattr(d, "observed", True)]
+            if raw_boxes is not None:
+                raw_boxes.extend(d.bbox for d in dets)
         h, w = frame_bgr.shape[:2]
         bottom_limit = max(1, int(h * self._cfg.viewport_bottom)) if self._cfg.viewport_bottom is not None else h
         gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
         boxes = [(x1, y1, x2, min(y2, bottom_limit - 1))
                  for d in dets for x1, y1, x2, y2 in [d.bbox]
                  if y1 < bottom_limit and x2 > x1 and min(y2, bottom_limit - 1) > y1]
+        if self._side and self._cfg.reference_side is None and len(boxes) > 1:
+            # Preserve the outer silhouette before dark blobs replace the inner detections.
+            boxes = _merge_wrappers(boxes, frame_bgr[:bottom_limit], self._cfg.reference_weak_delta, side=True)
         # Reference scanner uses a bright belt: assist COCO YOLO with dark blobs.
         small = cv2.resize(gray, (640, 360))
         band = small[3:14]
@@ -638,7 +716,7 @@ class ParcelTracker:
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        blobs = []
+        gray_blobs = []
         for contour in contours:
             x, y, bw, bh = cv2.boundingRect(contour)
             normal = bw >= 45 and bh >= 25 and bw * bh >= 3000
@@ -648,14 +726,23 @@ class ParcelTracker:
                 continue
             if (x <= 3 or x + bw >= 637) and bh >= 360 * 0.8:
                 continue
+            gray_blobs.append((x, y, bw, bh))
+        side_blobs = _side_flat_blobs(frame_bgr, int(bottom_limit * 360 / h)) if self._side else []
+        blobs = []
+        accepted_side_blobs = []
+        for index, (x, y, bw, bh) in enumerate(side_blobs + gray_blobs):
             candidate = (int(x * w / 640), int(y * h / 360),
                          min(w - 1, int((x + bw) * w / 640)), min(bottom_limit - 1, int((y + bh) * h / 360)))
-            def contained(box: tuple[int, int, int, int]) -> bool:
-                return (candidate[0] <= box[0] and candidate[1] <= box[1]
-                        and candidate[2] >= box[2] and candidate[3] >= box[3])
+            def contained(box: tuple[int, int, int, int], outer=candidate) -> bool:
+                return (outer[0] <= box[0] and outer[1] <= box[1]
+                        and outer[2] >= box[2] and outer[3] >= box[3])
+            if any(_mostly_contained(candidate, blob) for blob in accepted_side_blobs):
+                continue
             if not any((_iou(*candidate, *box) > 0.25 or _mostly_contained(candidate, box))
                        and not contained(box) for box in boxes):
                 blobs.append(candidate)
+                if index < len(side_blobs):
+                    accepted_side_blobs.append(candidate)
                 boxes = [box for box in boxes if not contained(box)]
         merge_boxes = cluster_boxes(blobs + boxes)
         diagnostic_view = None
@@ -666,11 +753,12 @@ class ParcelTracker:
                 self._merge_diagnostic_at = now
         merge_boxes = _merge_bottom_fragments(merge_boxes, h, side=self._side, diagnostic_view=diagnostic_view)
         confirmed_unions = []
-        framed = _merge_adjacent_boxes(
-            merge_boxes, gray, threshold, diagnostic_view=diagnostic_view,
+        adjacent = _merge_adjacent_boxes(
+            merge_boxes, gray, threshold, diagnostic_view="side_geometry_candidate" if self._side and diagnostic_view else diagnostic_view,
             recent_unions=tuple(box for frame in self._recent_top_unions for box in frame),
             confirmed_unions=None if self._side else confirmed_unions,
         )
+        framed = merge_boxes if self._side else adjacent
         if not self._side:
             # A carried merge never renews its own two-frame window.
             self._recent_top_unions = [*self._recent_top_unions[-1:], tuple(confirmed_unions)]
@@ -683,7 +771,7 @@ class ParcelTracker:
             )
         elif (self._cfg.reference_side if self._side else self._cfg.reference_top) is None and len(framed) > 1:
             framed = _merge_wrappers(framed, frame_bgr[:bottom_limit], self._cfg.reference_weak_delta,
-                                     diagnostic_view=diagnostic_view)
+                                     diagnostic_view=diagnostic_view, side=self._side)
 
         # asosiasi IoU ke track parcel yang ada (greedy)
         matched: dict[int, int] = {}  # pid -> idx box

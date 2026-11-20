@@ -211,6 +211,7 @@ class Pipeline:
         self._side_track_states: dict[int, dict] = {}
         self._pending_top = deque()
         self._pending_side = deque()
+        self._side_capture_samples: dict[int, deque] = {}
         self._task: asyncio.Task | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
 
@@ -249,8 +250,9 @@ class Pipeline:
         self._tracker.reset()
         self._track_states.clear()
         self._side_track_states.clear()
-        self._pending_top.clear()
+        self._clear_pending_top()
         self._pending_side.clear()
+        self._side_capture_samples.clear()
         if hasattr(self, "_detector"):
             self._detector.reset()
         if hasattr(self, "_side_detector"):
@@ -285,8 +287,9 @@ class Pipeline:
         self._annotated_source = None
         self._track_states.clear()
         self._side_track_states.clear()
-        self._pending_top.clear()
+        self._clear_pending_top()
         self._pending_side.clear()
+        self._side_capture_samples.clear()
         self.overlays.clear()
         summary = {
             "stopped": True,
@@ -558,6 +561,20 @@ class Pipeline:
             return None
         return cv2.absdiff(frame, reference_roi).max(axis=2)
 
+    def _capture_ready(self, det, state: dict, shape: tuple[int, ...], *, side_belt_edge: bool = False) -> bool:
+        h, w = shape[:2]
+        x1, y1, x2, y2 = det.bbox
+        crop_pad = round((x2 - x1) * 0.15)
+        left_margin = max(w * self._settings.capture.top_capture_left_margin, crop_pad)
+        right_margin = w * 6 / 640
+        if side_belt_edge and w - (x2 - x1) < 2 * left_margin + right_margin:
+            # A long parcel can be fully visible before there is room for its crop padding.
+            left_margin = max(1, round(right_margin))
+        bottom_visible = y2 < h - 1 or (side_belt_edge and y2 == h - 1)
+        return (state["hits"] >= 2 and not state["captured"] and state["entered"]
+                and x1 > state["entry_x"] and x1 >= left_margin and y1 >= h * 6 / 360
+                and x2 <= w - right_margin and bottom_visible)
+
     async def _process_track_frame(self, frames: dict[str, np.ndarray]) -> None:
         from .detector import ParcelDetection, ParcelTracker, make_detector
 
@@ -586,9 +603,7 @@ class Pipeline:
 
         # live tracking overlays + auto-capture: parcel masuk dari kiri,
         # bergerak ke kanan, dan sudah FULL muncul -> capture
-        min_hits = 2
         W = top.shape[1]
-        H = top.shape[0]
         entry_zone = W * 0.30
         seen: set[int] = set()
         for det in parcels:
@@ -612,16 +627,12 @@ class Pipeline:
             else:
                 ov.x1, ov.x2, ov.y1, ov.y2 = float(x1), float(x2), float(y1), float(y2)
                 ov.conf = det.conf
-            # full muncul: kiri sudah jelas dari tepi + objek bergerak ke kanan
-            # sejak pertama teramati + track stabil
-            crop_pad = round((x2 - x1) * 0.15)
-            fully_out = (x1 >= max(W * self._settings.capture.top_capture_left_margin, crop_pad)
-                         and x1 > st["entry_x"] and y1 >= H * 6 / 360
-                         and x2 <= W - W * 6 / 640 and y2 < H - 1)
-            if st["hits"] >= min_hits and not st["captured"] and st["entered"] and fully_out:
+            if self._capture_ready(det, st, top.shape):
                 st["captured"] = True
                 st["capturing"] = True
                 slot = {"batch_id": batch_id, "seq": det.parcel_id, "decision": None, "side": None, "time": captured_at, "captured_at": datetime.now().astimezone()}
+                slot["side_ready"] = asyncio.get_running_loop().create_future()
+                slot["belt_span"] = (x1 / W, x2 / W)
                 self._queue_track_capture(self._pending_top, slot)
                 capture_det = ParcelDetection(det.parcel_id, (x1, y1 + top_y0, x2, y2 + top_y0), det.conf)
                 asyncio.create_task(self._capture_with_effect(capture_det, full_top.copy(), slot, batch_id, st))
@@ -642,21 +653,26 @@ class Pipeline:
             self._annotated_side = None
 
     async def _process_side_track_frame(self, side: np.ndarray, captured_at: float | None = None, batch_id: str | None = None) -> None:
-        from .detector import ParcelTracker, make_detector
+        from .detector import ParcelTracker, make_detector, side_capture_silhouettes
 
         if captured_at is None:
             captured_at = time.monotonic()
             batch_id = self.session.batch_id
         full_side = side
-        side = self._track_roi(full_side, "side")
+        roi_start, roi_end = self._track_roi_rows(full_side.shape[0], "side")
+        side = full_side[roi_start:roi_end]
         if not hasattr(self, "_side_detector"):
             self._side_detector = ParcelTracker(self._settings.detector, make_detector(self._settings.detector), side=True)
         delta = self._track_reference_delta(side, "side", full_side.shape)
+        raw_boxes = []
+        kwargs = {"raw_boxes": raw_boxes} if isinstance(self._side_detector, ParcelTracker) else {}
         if self._settings.detector.side_reference_merge and delta is not None:
-            parcels = await asyncio.to_thread(self._side_detector.process, side, reference_delta=delta)
-        else:
-            parcels = await asyncio.to_thread(self._side_detector.process, side)
+            kwargs["reference_delta"] = delta
+        parcels = await asyncio.to_thread(self._side_detector.process, side, **kwargs)
         h, w = side.shape[:2]
+        silhouettes = (await asyncio.to_thread(side_capture_silhouettes, side)
+                       if any(getattr(det, "observed", True) for det in parcels) else [])
+        edge = max(1, round(w * 6 / 640))
         seen = set()
         overlays = []
         for det in parcels:
@@ -665,23 +681,50 @@ class Pipeline:
                 overlays.append(ParcelOverlay(det.parcel_id, x1, x2, y1=y1, y2=y2, conf=det.conf))
                 continue
             seen.add(det.parcel_id)
-            st = self._side_track_states.setdefault(det.parcel_id, {"hits": 0, "captured": False, "entered": None, "misses": 0})
+            x1, y1, x2, y2 = det.bbox
+            st = self._side_track_states.setdefault(det.parcel_id, {
+                "hits": 0, "captured": False, "entered": x1 <= w * 0.30, "entry_x": x1, "misses": 0,
+            })
             st["hits"] += 1
             st["misses"] = 0
-            x1, y1, x2, y2 = det.bbox
-            if st["entered"] is None:
-                st["entered"] = x1 <= w * 0.30
-            fully_out = (x1 >= w * 32 / 640 and y1 >= h * 6 / 360
-                         and x2 <= w - w * 6 / 640 and y2 < h - 1)
-            capturing = st["hits"] >= 2 and not st["captured"] and st["entered"] and fully_out
-            if capturing:
-                st["captured"] = True
-                px, py = round((x2 - x1) * 0.15), round((y2 - y1) * 0.15)
-                patch = side[max(0, y1 - py):min(h, y2 + py + 1), max(0, x1 - px):min(w, x2 + px + 1)].copy()
-                self._queue_track_capture(self._pending_side, {
-                    "batch_id": batch_id, "time": captured_at - self._settings.capture.pairing_side_delay_s,
-                    "side": patch, "captured_at": datetime.now().astimezone(),
-                })
+            box_area = max(1, (x2 - x1) * (y2 - y1))
+            supports = []
+            for left, top, right, bottom in silhouettes:
+                overlap = max(0, min(x2, right) - max(x1, left)) * max(0, min(y2, bottom) - max(y1, top))
+                if overlap >= 0.25 * box_area:
+                    supports.append((overlap, (left, top, right, bottom)))
+            left, top, right, bottom = x1, y1, x2, y2
+            if supports:
+                _, (sx1, sy1, sx2, sy2) = max(supports)
+                left, top, right, bottom = min(x1, sx1), min(y1, sy1), max(x2, sx2), max(y2, sy2)
+            clearance = min(left, w - 1 - right)
+            fully_visible = (clearance >= edge and top >= max(1, round(h * 6 / 360))
+                             and (bottom < h - 1 or roi_end < full_side.shape[0]))
+            capturing = fully_visible and self._capture_ready(
+                det, st, side.shape, side_belt_edge=roi_end < full_side.shape[0],
+            )
+            matched_time = captured_at - self._settings.capture.pairing_side_delay_s
+            samples = self._side_capture_samples.get(det.parcel_id)
+            sample_interval = self._settings.capture.pairing_max_skew_s / 2
+            # Cap the clearance score once there is room for padding on both sides.
+            quality = (bool(supports), min(clearance, round(w * 0.10)))
+            sample_due = (not samples or matched_time - samples[-1]["time"] >= sample_interval
+                          or quality > samples[-1]["quality"])
+            if capturing or (batch_id and not st.get("paired") and fully_visible and sample_due):
+                px = max(round((right - left) * 0.15), round(w * 8 / 640))
+                py = max(round((bottom - top) * 0.15), round(h * 8 / 360))
+                patch = side[max(0, top - py):min(h, bottom + py + 1),
+                             max(0, left - px):min(w, right + px + 1)].copy()
+                candidate = {
+                    "batch_id": batch_id, "time": matched_time, "side": patch,
+                    "captured_at": datetime.now().astimezone(), "track_id": det.parcel_id,
+                    "belt_span": (left / w, right / w), "quality": quality,
+                }
+                if capturing:
+                    st["captured"] = True
+                    self._queue_track_capture(self._pending_side, candidate)
+                else:
+                    self._side_capture_samples.setdefault(det.parcel_id, deque(maxlen=6)).append(candidate)
             overlays.append(ParcelOverlay(det.parcel_id, x1, x2, y1=y1, y2=y2, conf=det.conf, capturing=capturing))
         for tid in list(self._side_track_states):
             if tid not in seen:
@@ -689,12 +732,53 @@ class Pipeline:
                 if self._side_track_states[tid]["misses"] > 15:
                     del self._side_track_states[tid]
         self._annotated_side = full_side.copy()
-        self._track_roi(self._annotated_side, "side")[:] = self._annotate_track(side, overlays, delta=delta)
+        self._annotated_side[roi_start:roi_end] = self._annotate_track(side, overlays, delta=delta)
+        # ponytail: naive overlap scan; spatial indexing if detection counts grow large.
+        boxes = [b for b in raw_boxes if b[2] > b[0] and b[3] > b[1]]
+        while len(boxes) >= 3:
+            group = [boxes.pop()]
+            for box in group:
+                overlapping = [b for b in boxes if min(box[2], b[2]) > max(box[0], b[0])
+                               and min(box[3], b[3]) > max(box[1], b[1])]
+                group.extend(overlapping)
+                boxes = [b for b in boxes if b not in overlapping]
+            if len(group) >= 3:
+                self._label_chip(self._annotated_side, "candidate CLUTTER/perlu verifikasi", 4, 24, (0, 100, 180))
+                break
+
+    def _clear_pending_top(self) -> None:
+        for slot in self._pending_top:
+            ready = slot.get("side_ready")
+            if ready is not None and not ready.done():
+                ready.set_result(False)
+        self._pending_top.clear()
+
+    @staticmethod
+    def _belt_overlap(top: dict, side: dict) -> float | None:
+        if "belt_span" not in top or "belt_span" not in side:
+            return None
+        left, right = top["belt_span"]
+        side_left, side_right = side["belt_span"]
+        return max(0.0, min(right, side_right) - max(left, side_left)) / (
+            max(right, side_right) - min(left, side_left)
+        )
+
+    def _resolve_spatial_capture_matches(self, tops, selected):
+        scores = {(i, j): self._belt_overlap(tops[i], sample)
+                  for i, candidates in enumerate(selected) for j, sample in candidates.items()}
+        # Only use geometry when one candidate clearly wins for both views.
+        for (i, j), score in scores.items():
+            if score is None or score < 0.55:
+                continue
+            rivals = [(a, b) for a, b in scores if (a, b) != (i, j) and (a == i or b == j)]
+            if rivals and all(scores[key] is not None and score - scores[key] >= 0.20 for key in rivals):
+                for a, b in rivals:
+                    selected[a].pop(b, None)
 
     def _queue_track_capture(self, queue: deque, capture: dict) -> None:
         # ponytail: bounded global per-pipeline queues; increase capacity if measured throughput requires it.
         if len(queue) >= 256:
-            self._pending_top.clear()
+            self._clear_pending_top()
             self._pending_side.clear()
             logger.warning("discarded pending track captures: pairing queue full")
         queue.append(capture)
@@ -705,27 +789,86 @@ class Pipeline:
     def _match_track_captures(self, now: float) -> None:
         skew = self._settings.capture.pairing_max_skew_s
         delay = self._settings.capture.pairing_side_delay_s
+        recovery_skew = 2 * skew
         # Both cameras must have passed the whole candidate window before deciding.
         watermark = now - max(0.0, delay)
         tops = list(self._pending_top)
         sides = list(self._pending_side)
-        top_edges = [[j for j, side in enumerate(sides)
-                      if top["batch_id"] == side["batch_id"] == self.session.batch_id
-                      and abs(top["time"] - side["time"]) <= skew] for top in tops]
-        side_edges = [[i for i, edges in enumerate(top_edges) if j in edges] for j in range(len(sides))]
-        remove_top, remove_side = set(), set()
+        # Group alternate samples with the regular trigger for the same side track.
+        samples_by_side = [list(self._side_capture_samples.get(side.get("track_id"), ())) + [side]
+                           for side in sides]
+        pending_ids = {side.get("track_id") for side in sides}
+        for track_id, samples in self._side_capture_samples.items():
+            if track_id not in pending_ids:
+                samples_by_side.append(list(samples))
+        top_edges = []
+        selected = []
+        for top in tops:
+            candidates = {}
+            for j, samples in enumerate(samples_by_side):
+                matches = [sample for sample in samples
+                           if top["batch_id"] == sample["batch_id"] == self.session.batch_id
+                           and abs(top["time"] - sample["time"]) <= skew]
+                if matches:
+                    candidates[j] = (sides[j] if j < len(sides) and any(sample is sides[j] for sample in matches)
+                                     else min(matches, key=lambda sample: abs(top["time"] - sample["time"])))
+            selected.append(candidates)
+            top_edges.append(list(candidates))
+        # Give the regular window priority before recovering views that are farther apart.
+        strict_sides = {j for edges in top_edges for j in edges}
+        recovery_tops = set()
         for i, top in enumerate(tops):
-            if top["time"] + skew >= watermark:
+            if top_edges[i]:
+                continue
+            for j, samples in enumerate(samples_by_side):
+                if j in strict_sides or samples[-1].get("track_id") is None:
+                    continue
+                nearby = [sample for sample in samples
+                          if top["batch_id"] == sample["batch_id"] == self.session.batch_id
+                          and skew < abs(sample["time"] - top["time"]) <= recovery_skew
+                          and (sample["time"] > top["time"] or (self._belt_overlap(top, sample) or 0) >= 0.35)]
+                if nearby:
+                    selected[i][j] = min(nearby, key=lambda sample: abs(top["time"] - sample["time"]))
+                    top_edges[i].append(j)
+                    recovery_tops.add(i)
+        self._resolve_spatial_capture_matches(tops, selected)
+        top_edges = [list(candidates) for candidates in selected]
+        side_edges = [[i for i, edges in enumerate(top_edges) if j in edges] for j in range(len(samples_by_side))]
+        remove_top = {i for i, top in enumerate(tops) if top["batch_id"] != self.session.batch_id}
+        remove_side = {j for j, samples in enumerate(samples_by_side)
+                       if samples[-1]["batch_id"] != self.session.batch_id}
+        for i, top in enumerate(tops):
+            if i in remove_top:
+                continue
+            window = recovery_skew if i in recovery_tops else skew
+            if top["time"] + window >= watermark:
                 continue
             edges = top_edges[i]
             if len(edges) == 1:
                 j = edges[0]
-                if len(side_edges[j]) == 1 and sides[j]["time"] + skew < watermark:
-                    top["side"] = sides[j]["side"]
-                    top["side_captured_at"] = sides[j].get("captured_at")
-                    logger.info("capture pair matched batch=%s seq=%s delta=%.3fs max_skew=%.3fs",
-                                top["batch_id"], top["seq"], sides[j]["time"] - top["time"], skew)
-                    self._store_paired_side(top)
+                sample = selected[i][j]
+                if len(side_edges[j]) == 1 and sample["time"] + window < watermark:
+                    # Pair using the original timestamp, then choose the best complete
+                    # frame from that same side track when it falls within the window.
+                    photo = max(
+                        (candidate for candidate in samples_by_side[j]
+                         if candidate["batch_id"] == top["batch_id"]
+                         and abs(candidate["time"] - top["time"]) <= window),
+                        key=lambda candidate: (candidate.get("quality", (False, 0)),
+                                               -abs(candidate["time"] - top["time"])),
+                        default=sample,
+                    ) if "quality" in sample else sample
+                    top["side"] = photo["side"]
+                    top["side_captured_at"] = photo.get("captured_at")
+                    logger.info("capture pair matched batch=%s seq=%s delta=%.3fs max_skew=%.3fs source=%s",
+                                top["batch_id"], top["seq"], sample["time"] - top["time"], window,
+                                "recovery" if i in recovery_tops else
+                                ("trigger" if j < len(sides) and sample is sides[j] else "visible-side"))
+                    ready = top.get("side_ready")
+                    if ready is not None and not ready.done():
+                        ready.set_result(True)
+                    else:
+                        self._store_paired_side(top)
                     remove_top.add(i)
                     remove_side.add(j)
             if len(edges) > 1 or any(len(side_edges[j]) > 1 for j in edges):
@@ -742,15 +885,32 @@ class Pipeline:
                 logger.warning("capture pairing ambiguous batch=%s top=%d side=%d max_skew=%.3fs; not paired",
                                top["batch_id"], len(component_top), len(component_side), skew)
         for i, top in enumerate(tops):
-            if not top_edges[i] and top["time"] + skew < watermark:
+            if not top_edges[i] and top["time"] + recovery_skew < watermark:
                 logger.warning("capture top unmatched batch=%s seq=%s max_skew=%.3fs side_delay=%.3fs",
-                               top["batch_id"], top["seq"], skew, delay)
+                               top["batch_id"], top["seq"], recovery_skew, delay)
         for j, side in enumerate(sides):
-            if not side_edges[j] and side["time"] + skew < watermark:
+            retention = recovery_skew if side.get("track_id") is not None else skew
+            if not side_edges[j] and side["time"] + retention < watermark:
                 logger.warning("capture side unmatched batch=%s max_skew=%.3fs side_delay=%.3fs",
-                               side["batch_id"], skew, delay)
-        remove_top.update(i for i, top in enumerate(tops) if not top_edges[i] and top["time"] + skew < watermark)
-        remove_side.update(j for j, side in enumerate(sides) if not side_edges[j] and side["time"] + skew < watermark)
+                               side["batch_id"], retention, delay)
+                remove_side.add(j)
+        remove_top.update(i for i, top in enumerate(tops) if not top_edges[i] and top["time"] + recovery_skew < watermark)
+        for j in remove_side:
+            track_id = samples_by_side[j][-1].get("track_id")
+            if track_id is not None:
+                self._side_capture_samples.pop(track_id, None)
+                if track_id in self._side_track_states and side_edges[j]:
+                    self._side_track_states[track_id]["captured"] = True
+                    self._side_track_states[track_id]["paired"] = True
+        awaiting_tracks = {samples[-1].get("track_id") for j, samples in enumerate(samples_by_side)
+                           if side_edges[j] and j not in remove_side}
+        for track_id, samples in list(self._side_capture_samples.items()):
+            if track_id not in awaiting_tracks and samples[-1]["time"] + recovery_skew < watermark:
+                del self._side_capture_samples[track_id]
+        for i in remove_top:
+            ready = tops[i].get("side_ready")
+            if ready is not None and not ready.done():
+                ready.set_result(False)
         self._pending_top = deque(top for i, top in enumerate(tops) if i not in remove_top)
         self._pending_side = deque(side for j, side in enumerate(sides) if j not in remove_side)
 
@@ -764,7 +924,9 @@ class Pipeline:
         side_ref = f"{slot['batch_id']}/seq_{slot['seq']}_side.png"
         try:
             path = Path(self._settings.crop_dir, side_ref)
-            owned = await asyncio.to_thread(_save_original, path, bgra)
+            owned = slot.get("side_owned")
+            if owned is None:
+                owned = await asyncio.to_thread(_save_original, path, bgra)
         except Exception:  # noqa: BLE001
             logger.exception("failed saving side capture for parcel %s", slot["seq"])
             return
@@ -812,12 +974,27 @@ class Pipeline:
         owned = await self._prepare_top_capture(batch_id, det.parcel_id, crop_path, bgra)
         if owned is None:
             return
+        side_ref = None
+        if side is not None and "side_ready" in side:
+            if not await side["side_ready"]:
+                logger.warning("capture incomplete batch=%s seq=%s; AWB remains waiting", batch_id, det.parcel_id)
+                return
+            side_ref = f"{batch_id}/seq_{det.parcel_id}_side.png"
+            try:
+                side_bgra = cv2.cvtColor(side["side"], cv2.COLOR_BGR2BGRA)
+                side["side_owned"] = await asyncio.to_thread(
+                    _save_original, Path(self._settings.crop_dir, side_ref), side_bgra,
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("failed saving required side capture for parcel %s", det.parcel_id)
+                return
         try:
             decision = await self._dedup.process_parcel(
                 batch_id=batch_id,
                 track_id=det.parcel_id,
                 crop_bgra=bgra,
                 crop_ref=crop_rel,
+                crop_ref_side=side_ref,
             )
         except Exception:  # noqa: BLE001
             logger.exception("dedup decision crashed for parcel %s", det.parcel_id)

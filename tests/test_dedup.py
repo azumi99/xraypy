@@ -11,7 +11,10 @@ from tests.conftest import make_bgra
 
 async def test_new_parcel_gets_idx_and_awb(dedup, store):
     await store.insert_awb("AWB-001")
-    d = await dedup.process_parcel(batch_id="b1", track_id=1, crop_bgra=make_bgra(seed=1))
+    d = await dedup.process_parcel(
+        batch_id="b1", track_id=1, crop_bgra=make_bgra(seed=1), crop_ref_side="b1/seq_1_side.png",
+    )
+    assert d.record.crop_ref_side == "b1/seq_1_side.png"
     assert d.status == "NEW"
     assert d.record.idx == 0
     assert d.awb is not None and d.awb.awb_number == "AWB-001"

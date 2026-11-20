@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from collections.abc import Callable
 
 import asyncpg
 import numpy as np
@@ -52,6 +54,45 @@ class PgVectorStore(IdentityStore):
         if self._pool is not None:
             await self._pool.close()
             self._pool = None
+
+    async def listen_for_awb_waiting_changes(
+        self, publish: Callable[[str], None], set_available: Callable[[bool], None],
+    ) -> None:
+        assert self._pool is not None
+        channel = "cv_awb_waiting_changed"
+
+        def on_change(_connection, _pid, _channel, warehouse):
+            if warehouse in ("bgd", "cas"):
+                publish(warehouse)
+
+        while True:
+            try:
+                async with self._pool.acquire(timeout=10) as conn:
+                    disconnected = asyncio.Event()
+
+                    def on_disconnect(_connection, event=disconnected):
+                        event.set()
+
+                    await conn.add_listener(channel, on_change)
+                    conn.add_termination_listener(on_disconnect)
+                    set_available(True)
+                    # Reconcile changes committed while the listener was disconnected.
+                    for warehouse in ("bgd", "cas"):
+                        publish(warehouse)
+                    try:
+                        while not disconnected.is_set():
+                            try:
+                                await asyncio.wait_for(disconnected.wait(), timeout=15)
+                            except TimeoutError:
+                                await conn.execute("SELECT 1", timeout=5)
+                    finally:
+                        set_available(False)
+                        if not conn.is_closed():
+                            conn.remove_termination_listener(on_disconnect)
+                            await conn.remove_listener(channel, on_change)
+            except (OSError, TimeoutError, asyncpg.PostgresError, asyncpg.InterfaceError, RuntimeError):
+                logger.warning("AWB notification listener disconnected; retrying")
+            await asyncio.sleep(2)
 
     async def _run(self, query: str, *args):
         assert self._pool is not None
@@ -324,6 +365,7 @@ class PgVectorStore(IdentityStore):
         crop_ref: str | None,
         sim_score: float | None,
         require_awb: bool,
+        crop_ref_side: str | None = None,
     ) -> tuple[IdentityRecord, AwbRecord | None]:
         assert self._pool is not None
         async with self._pool.acquire() as conn:
@@ -347,8 +389,8 @@ class PgVectorStore(IdentityStore):
                     """
                     INSERT INTO cv.parcel_identity
                         (batch_id, track_id, idx, status, sim_score, model_name, model_version,
-                         area, aspect_ratio, hu_moments, crop_ref, embedding)
-                    VALUES ($1,$2,$3,'NEW',$4,$5,$6,$7,$8,$9,$10,$11)
+                         area, aspect_ratio, hu_moments, crop_ref, embedding, crop_ref_side)
+                    VALUES ($1,$2,$3,'NEW',$4,$5,$6,$7,$8,$9,$10,$11,$12)
                     RETURNING id
                     """,
                     batch_id,
@@ -362,6 +404,7 @@ class PgVectorStore(IdentityStore):
                     json_dumps_hu(shape.hu),
                     crop_ref,
                     embedding,
+                    crop_ref_side,
                 )
                 awb = await self._pair_next_awb_conn(conn, row["id"], batch_id)
                 if require_awb and awb is None:

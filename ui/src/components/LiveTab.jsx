@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import api, { post } from "../api";
 import SourceSelect from "./SourceSelect";
+import { shouldRefreshAwbs } from "../awbEvents";
 
-export default function LiveTab({ warehouse, frames, session, onSessionChange, onEvent }) {
+export default function LiveTab({ warehouse, frames, session, onSessionChange, onEvent, connected, waitingEventsAvailable }) {
   const topSource = useRef(null);
   const sideSource = useRef(null);
   const [starting, setStarting] = useState(false);
@@ -36,28 +37,69 @@ export default function LiveTab({ warehouse, frames, session, onSessionChange, o
   const [sources, setSources] = useState({ top: "screen", side: "screen", cameras: [] });
   const [waiting, setWaiting] = useState([]);
   const [leaving, setLeaving] = useState([]);
+  const [waitingError, setWaitingError] = useState(false);
   const refreshTimer = useRef(null);
+  const waitingRequest = useRef(null);
+  const requestVersion = useRef(0);
   const loadSources = async () => setSources(await api("/sources").catch(() => sources));
   useEffect(() => { loadSources(); }, []);
-  useEffect(() => {
-    let active = true;
-    api("/awb/waiting").then((data) => { if (active) setWaiting(data.items); }).catch(() => {});
-    return () => { active = false; clearTimeout(refreshTimer.current); };
+
+  const scheduleWaitingRefresh = useCallback((delay = 100) => {
+    const version = ++requestVersion.current;
+    clearTimeout(refreshTimer.current);
+    refreshTimer.current = setTimeout(async () => {
+      refreshTimer.current = null;
+      waitingRequest.current?.abort();
+      const request = new AbortController();
+      waitingRequest.current = request;
+      try {
+        const data = await api("/awb/waiting", { cache: "no-store", signal: request.signal });
+        if (requestVersion.current !== version) return;
+        setWaiting(data.items);
+        setWaitingError(false);
+      } catch {
+        if (requestVersion.current === version) setWaitingError(true);
+      } finally {
+        if (waitingRequest.current === request) waitingRequest.current = null;
+        if (requestVersion.current === version) setLeaving([]);
+      }
+    }, delay);
   }, []);
-  useEffect(() => onEvent((event) => {
-    if (event.type === "parcel.saved" && event.awb_number) {
-      setLeaving((current) => [...new Set([...current, event.awb_number])]);
+
+  useEffect(() => {
+    scheduleWaitingRefresh(0);
+    const unsubscribe = onEvent((event) => {
+      if (!shouldRefreshAwbs(event)) return;
+      if (event.type === "parcel.saved" && event.awb_number) {
+        setLeaving((current) => [...new Set([...current, event.awb_number])]);
+        scheduleWaitingRefresh(650);
+      } else {
+        scheduleWaitingRefresh();
+      }
+    });
+    return () => {
+      unsubscribe();
       clearTimeout(refreshTimer.current);
-      refreshTimer.current = setTimeout(() => {
-        api("/awb/waiting").then((data) => {
-          setWaiting(data.items);
-          setLeaving([]);
-        }).catch(() => setLeaving([]));
-      }, 650);
-    } else if (event.type?.startsWith("awb.")) {
-      api("/awb/waiting").then((data) => setWaiting(data.items)).catch(() => {});
-    }
-  }), [onEvent]);
+      refreshTimer.current = null;
+      requestVersion.current += 1;
+      waitingRequest.current?.abort();
+      waitingRequest.current = null;
+    };
+  }, [onEvent, scheduleWaitingRefresh, warehouse]);
+  useEffect(() => {
+    if (connected) scheduleWaitingRefresh(0);
+  }, [connected, scheduleWaitingRefresh]);
+
+  useEffect(() => {
+    // Keep queues fresh during a socket outage or a rolling backend update.
+    if (waitingEventsAvailable) return;
+    const poll = setInterval(() => {
+      if (refreshTimer.current === null && waitingRequest.current === null) {
+        scheduleWaitingRefresh(0);
+      }
+    }, 2000);
+    return () => clearInterval(poll);
+  }, [waitingEventsAvailable, scheduleWaitingRefresh]);
 
   return (
     <div className="flex flex-wrap gap-5">
@@ -92,6 +134,7 @@ export default function LiveTab({ warehouse, frames, session, onSessionChange, o
           <span className="awb-total">{waiting.length} waiting</span>
         </div>
         <p className="muted text-xs mt-2 mb-4">AWB diproses sesuai urutan antrean.</p>
+        {waitingError && <p role="alert" className="source-error mb-3">Antrean AWB gagal dimuat. Data mungkin belum terbaru.</p>}
         <ol className="scan-list" aria-label="Antrean AWB menunggu scan">
           {waiting.map((awb, index) => (
             <li key={awb.id} className={`scan-list-item ${leaving.includes(awb.awb_number) ? "scan-list-item-leaving" : ""}`}>

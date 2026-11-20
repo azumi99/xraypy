@@ -156,6 +156,7 @@ class IdentityStore(ABC):
         crop_ref: str | None,
         sim_score: float | None,
         require_awb: bool,
+        crop_ref_side: str | None = None,
     ) -> tuple[IdentityRecord, AwbRecord | None]:
         """Atomically: lock batch -> next idx -> insert NEW -> pair next WAITING AWB."""
 

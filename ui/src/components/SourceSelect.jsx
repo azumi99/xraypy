@@ -116,14 +116,23 @@ const SourceSelect = forwardRef(function SourceSelect({ warehouse, view, value, 
       ws.onerror = () => { if (generation === active.current.generation) { cleanup(); setError("Koneksi video gagal."); } };
       await post("/sources", { view, kind: "screen" });
       if (generation !== active.current.generation) return false;
+      let encoding = false;
       active.current.timer = setInterval(() => {
-        if (ws.readyState !== WebSocket.OPEN || ws.bufferedAmount > 1_000_000 || !video.videoWidth || !video.videoHeight) return;
+        // Keep one JPEG in flight and sample fresh video once the socket drains.
+        if (encoding || ws.readyState !== WebSocket.OPEN || ws.bufferedAmount !== 0
+            || !video.videoWidth || !video.videoHeight) return;
         if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
           canvas.width = video.videoWidth;
           canvas.height = video.videoHeight;
         }
         ctx.drawImage(video, 0, 0);
-        canvas.toBlob((blob) => { if (blob && ws.readyState === WebSocket.OPEN && generation === active.current.generation) ws.send(blob); }, "image/jpeg", 0.7);
+        encoding = true;
+        canvas.toBlob((blob) => {
+          encoding = false;
+          if (blob && ws.readyState === WebSocket.OPEN && generation === active.current.generation) {
+            ws.send(blob);
+          }
+        }, "image/jpeg", 0.7);
       }, 100);
       const saved = kind === "browser" ? { kind, deviceId: preference.deviceId } : { kind };
       writeSourcePreference(warehouse, view, saved); onSaved?.(); setSharing(true); setBusy(false);

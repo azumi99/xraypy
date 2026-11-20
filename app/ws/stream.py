@@ -19,8 +19,8 @@ import logging
 import cv2
 from fastapi import APIRouter, WebSocket
 
-from ..security import authorized, identity, require_operator_ws
 from ..live import live_resources
+from ..security import authorized, identity, require_operator_ws
 from ..warehouse import warehouse_context
 
 logger = logging.getLogger(__name__)
@@ -72,6 +72,8 @@ async def stream(ws: WebSocket) -> None:
     pipeline = runtime.pipeline
     queue = bus.subscribe()
     try:
+        if getattr(getattr(ws.app, "state", None), "awb_waiting_notifications", False):
+            await ws.send_json({"type": "awb.waiting_live", "available": True})
         last_frame = 0.0
         while True:
             if not authorized(ws):

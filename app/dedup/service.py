@@ -51,6 +51,7 @@ class DedupService:
         crop_bgra: np.ndarray,
         crop_ref: str | None = None,
         shape: ShapeFeatures | None = None,
+        crop_ref_side: str | None = None,
     ) -> Decision:
         """Full decision flow for one finalized parcel crop."""
         if shape is None:
@@ -153,6 +154,7 @@ class DedupService:
                 crop_ref=crop_ref,
                 sim_score=sim,
                 require_awb=self._settings.awb.require_for_new,
+                **({"crop_ref_side": crop_ref_side} if crop_ref_side is not None else {}),
             )
         except Exception as exc:  # noqa: BLE001
             logger.error("failed to finalize NEW parcel: %s", exc)
