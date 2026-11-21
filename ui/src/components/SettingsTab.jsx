@@ -14,6 +14,20 @@ function statusLabel(tunnel) {
   return labels[tunnel.state] || "Tidak diketahui";
 }
 
+function StatusPill({ label, tone }) {
+  return <span role="status" className={`settings-status settings-status-${tone}`}>
+    <i aria-hidden="true" />{label}
+  </span>;
+}
+
+function tunnelTone(tunnel) {
+  if (!tunnel?.enabled) return "neutral";
+  if (tunnel.state === "connected") return "good";
+  if (tunnel.state === "error") return "bad";
+  if (tunnel.state === "connecting") return "warn";
+  return "neutral";
+}
+
 export default function SettingsTab({ warehouse }) {
   const [status, setStatus] = useState(null);
   const [sync, setSync] = useState(null);
@@ -73,48 +87,72 @@ export default function SettingsTab({ warehouse }) {
 
   const manifest = status?.manifest;
   const warehouseSync = sync?.items?.[warehouse];
+  const database = status?.database;
+  const syncMetrics = warehouseSync ? [
+    ["Tersinkron", warehouseSync.synced, "good"],
+    ["Menunggu", warehouseSync.pending, "warn"],
+    ["Gagal", warehouseSync.failed, "bad"],
+    ["Belum terdaftar", warehouseSync.unknown, "neutral"],
+  ] : [];
+  const photoTotal = warehouseSync?.total ?? 0;
+
   return (
-    <div className="max-w-4xl space-y-4">
-      <p className="text-sm text-muted">Status koneksi diperbarui setiap 5 detik. Kontrol manifest hanya berlaku untuk warehouse Anda.</p>
-      {error && <p role="alert" className="text-sm text-red-400">{error}</p>}
-      <section className="panel" aria-labelledby="manifest-tunnel-title">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div><h3 id="manifest-tunnel-title">Tunnel database manifest</h3><p className="text-sm text-muted">Warehouse {warehouse.toUpperCase()}</p></div>
-          <strong role="status" className="rounded-full border border-[var(--border)] bg-[var(--bg-cream)] px-3 py-1 text-sm">{statusLabel(manifest)}</strong>
-        </div>
-        <div className="mt-5 flex flex-wrap gap-3">
-          {[["start", "Start"], ["stop", "Stop"], ["restart", "Restart"]].map(([action, label]) => (
-            <button key={action} type="button" className={action === "start" ? "btn-clay disabled:opacity-50" : "btn-ghost disabled:opacity-50"} disabled={manifest?.enabled !== true || !["connected", "stopped", "error"].includes(manifest?.state) || !!pending || (action === "start" && manifest?.state === "connected") || (action === "stop" && manifest?.state === "stopped")} onClick={() => control(action)}>
-              {pending === action ? "Memproses..." : label}
-            </button>
-          ))}
-        </div>
-      </section>
-      <section className="panel" aria-labelledby="sync-tunnel-title">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div><h3 id="sync-tunnel-title">Sinkronisasi Foto X-ray</h3><p className="text-sm text-muted">Foto lokal dikirim otomatis ke server per warehouse.</p></div>
-          <strong role="status" className="rounded-full border border-[var(--border)] bg-[var(--bg-cream)] px-3 py-1 text-sm">{!sync ? "Tidak diketahui" : sync.enabled ? "Aktif" : "Nonaktif"}</strong>
-        </div>
-        {sync?.enabled && warehouseSync && (
-          <div className="mt-5 rounded-xl border border-[var(--border)] bg-[var(--bg-cream)] p-4">
-            <div className="flex items-center justify-between">
-              <strong>{warehouse.toUpperCase()}</strong>
-              <span className="muted text-xs">{warehouseSync.total} foto</span>
-            </div>
-            <div className="mt-3 flex flex-wrap gap-3 text-xs">
-              <span className="text-ok font-bold">✓ {warehouseSync.synced} tersinkron</span>
-              <span className="st-waiting font-bold">⏳ {warehouseSync.pending} menunggu</span>
-              <span className="text-bad font-bold">✗ {warehouseSync.failed} gagal</span>
-              <span className="muted font-bold">? {warehouseSync.unknown} belum terdaftar</span>
-            </div>
+    <div className="settings-page">
+      <header className="settings-heading">
+        <p>Warehouse <strong>{warehouse.toUpperCase()}</strong></p>
+        <span className="settings-refresh">Diperbarui setiap 5 detik</span>
+      </header>
+      {error && <p role="alert" className="dashboard-error">{error}</p>}
+      <div className="settings-connections">
+        <section className="dashboard-panel settings-panel" aria-labelledby="manifest-tunnel-title">
+          <header className="settings-panel-heading">
+            <div><h3 id="manifest-tunnel-title">Tunnel manifest</h3><p>Akses database manifest warehouse ini.</p></div>
+            <StatusPill label={statusLabel(manifest)} tone={tunnelTone(manifest)} />
+          </header>
+          <div className="settings-actions" aria-label="Kontrol tunnel manifest">
+            {[["start", "Start"], ["stop", "Stop"], ["restart", "Restart"]].map(([action, label]) => (
+              <button key={action} type="button" className={action === "start" ? "btn-clay" : "btn-ghost"}
+                disabled={manifest?.enabled !== true || !["connected", "stopped", "error"].includes(manifest?.state) || !!pending ||
+                  (action === "start" && manifest?.state === "connected") || (action === "stop" && manifest?.state === "stopped")}
+                onClick={() => control(action)}>
+                {pending === action ? "Memproses…" : label}
+              </button>
+            ))}
           </div>
+        </section>
+        <section className="dashboard-panel settings-panel" aria-labelledby="database-tunnel-title">
+          <header className="settings-panel-heading">
+            <div><h3 id="database-tunnel-title">Tunnel PostgreSQL</h3><p>Database aplikasi yang dipakai bersama oleh seluruh warehouse.</p></div>
+            <StatusPill label={statusLabel(database)} tone={tunnelTone(database)} />
+          </header>
+        </section>
+      </div>
+      <section className="dashboard-panel settings-panel" aria-labelledby="sync-tunnel-title">
+        <header className="settings-panel-heading">
+          <div><h3 id="sync-tunnel-title">Sinkronisasi Foto X-ray</h3><p>Pengiriman foto lokal ke server.</p></div>
+          <StatusPill label={!sync ? "Tidak diketahui" : sync.enabled ? "Aktif" : "Nonaktif"} tone={sync?.enabled ? "good" : "neutral"} />
+        </header>
+        {sync?.enabled && warehouseSync && (
+          <>
+            <div className="settings-sync-summary">
+              <div><strong>{photoTotal.toLocaleString("id-ID")}</strong> <span>foto terdata</span></div>
+              {photoTotal > 0 && <span>{Math.round(100 * warehouseSync.synced / photoTotal)}% tersinkron</span>}
+            </div>
+            {photoTotal > 0 && <div className="settings-sync-bar" aria-hidden="true">
+              {syncMetrics.map(([label, count, tone]) => (
+                <span key={label} className={`settings-segment-${tone}`} style={{ flexGrow: count, flexBasis: 0 }} />
+              ))}
+            </div>}
+            <dl className="settings-metrics">
+              {syncMetrics.map(([label, count, tone]) => (
+                <div key={label} className={`settings-metric settings-status-${tone}`}>
+                  <dt>{label}</dt>
+                  <dd>{count.toLocaleString("id-ID")}</dd>
+                </div>
+              ))}
+            </dl>
+          </>
         )}
-      </section>
-      <section className="panel" aria-labelledby="database-tunnel-title">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div><h3 id="database-tunnel-title">Tunnel PostgreSQL aplikasi</h3><p className="text-sm text-muted">Digunakan bersama oleh seluruh warehouse. Status saja.</p></div>
-          <strong role="status" className="rounded-full border border-[var(--border)] bg-[var(--bg-cream)] px-3 py-1 text-sm">{statusLabel(status?.database)}</strong>
-        </div>
       </section>
     </div>
   );

@@ -74,9 +74,9 @@ export default function AwbTab({ onChanged, onOpenDetail, onEvent, connected }) 
     return match(item.awb_number, applied.mawb) && match(item.hawb_number, applied.hawb)
       && match(manifest?.airlines_code, applied.airlines) && match(manifest?.flight_no, applied.flight);
   });
-  const rows = grouped ? groupAwbs(filteredItems, manifests) : filteredItems;
+  const rows = grouped ? groupAwbs(filteredItems, manifests, { byHawb: true }) : filteredItems;
   const filtered = !q ? rows : grouped
-    ? rows.filter((group) => group.status.toLowerCase().includes(q) || group.items.some(matches))
+    ? rows.filter((group) => group.status.toLowerCase().includes(q) || group.items.some(matches) || group.hawbGroups.some((hawb) => hawb.nomorAju.some((aju) => aju.toLowerCase().includes(q))))
     : rows.filter(matches);
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const safePage = Math.min(page, totalPages);
@@ -108,11 +108,11 @@ export default function AwbTab({ onChanged, onOpenDetail, onEvent, connected }) 
   const statusColor = { PAIRED: "text-ok", WAITING: "st-waiting", CANCELLED: "text-muted" };
 
   return (
-    <div className="grid gap-3 w-full">
+    <div className="data-workspace grid min-w-0 grid-cols-[minmax(0,1fr)] gap-3 w-full">
       <section className="panel awb-display-mode">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h3>Display Mode</h3>
-          <div className="flex gap-2" aria-label="Display Mode">
+          <div className="flex flex-wrap gap-2" aria-label="Display Mode">
             <button type="button" className={grouped ? "btn-clay" : "btn-ghost"} aria-pressed={grouped} onClick={() => { setGrouped(true); setPage(1); }}>Grouping</button>
             <button type="button" className={!grouped ? "btn-clay" : "btn-ghost"} aria-pressed={!grouped} onClick={() => { setGrouped(false); setPage(1); }}>Non-Grouping</button>
           </div>
@@ -147,16 +147,20 @@ export default function AwbTab({ onChanged, onOpenDetail, onEvent, connected }) 
         </label>
       </div>
 
-      <div className="awb-table-scroll">
+      <div className="awb-table-scroll" tabIndex={0} role="region" aria-label="Tabel AWB, dapat digeser horizontal">
       <table className="awb-data-table w-full">
         <thead>
-          {grouped ? <tr><th>#</th><th>MAWB</th><th>Airlines</th><th>Origin</th><th>Pieces</th><th>Status</th></tr> :
-          <tr><th>#</th><th>MAWB</th><th>HAWB</th><th>Pieces</th><th>Airlines</th><th>Origin</th><th>Status</th><th>Date Time</th><th>Aksi</th></tr>}
+          {grouped ? <tr><th>#</th><th>MAWB</th><th>HAWB</th><th>Nomor AJU</th><th>Airlines</th><th>Origin</th><th>Pieces</th><th>Status</th></tr> :
+          <tr><th>#</th><th>MAWB</th><th>HAWB</th><th>Nomor AJU</th><th>Pieces</th><th>Airlines</th><th>Origin</th><th>Status</th><th>Date Time</th><th>Aksi</th></tr>}
         </thead>
         <tbody>
           {grouped ? pageItems.map((group, i) => <tr key={group.items[0].id} className="cursor-pointer" onClick={() => onOpenDetail?.(group.items[0].id)}>
             <td className="muted">{(safePage - 1) * pageSize + i + 1}</td>
-            <td>{group.mawb || "—"}</td>
+            <td><strong>{group.mawb || "—"}</strong></td>
+            <td><button type="button" className="awb-number" onClick={(event) => { event.stopPropagation(); onOpenDetail?.(group.items[0].id); }}>
+              {group.hawbGroups[0].hawb || "—"}
+            </button></td>
+            <td>{group.hawbGroups[0].nomorAju.join(", ") || "—"}</td>
             <td title={group.airlines === null ? "Manifest tidak tersedia" : undefined}>{group.airlines ?? "…"}</td>
             <td title={group.origin === null ? "Manifest tidak tersedia" : undefined}>{group.origin ?? "…"}</td>
             <td><span className={`awb-status ${group.status === "INCOMPLETE" ? "st-incomplete" : group.status === "COMPLETE" ? "text-ok" : group.status === "LOADING" || group.status === "UNAVAILABLE" ? "st-waiting" : "text-bad"}`}>{group.scanned} / {group.status === "LOADING" ? "…" : group.expected ?? "tidak tersedia"}</span></td>
@@ -169,6 +173,7 @@ export default function AwbTab({ onChanged, onOpenDetail, onEvent, connected }) 
                 <td className="muted">{(safePage - 1) * pageSize + i + 1}</td>
                 <td><button className="awb-number" onClick={(e) => { e.stopPropagation(); onOpenDetail?.(a.id); }}>{a.awb_number}</button></td>
                 <td>{a.hawb_number ?? "—"}</td>
+                <td>{manifests[a.id]?.data?.nomor_aju || "—"}</td>
                 <td>{a.part != null ? `${a.part} / ${a.total ?? "—"}` : "—"}</td>
                 <td title={manifests[a.id]?.status === "unavailable" ? "Manifest tidak tersedia" : undefined}>{manifests[a.id] ? (manifests[a.id].data?.airlines_code ?? "—") : "…"}</td>
                 <td title={manifests[a.id]?.status === "unavailable" ? "Manifest tidak tersedia" : undefined}>{manifests[a.id] ? (manifests[a.id].data?.origin ?? "—") : "…"}</td>
@@ -188,7 +193,7 @@ export default function AwbTab({ onChanged, onOpenDetail, onEvent, connected }) 
             );
           })}
           {filtered.length === 0 && (
-            <tr><td colSpan={grouped ? 6 : 9} className="muted text-center !py-10">Tidak ada data AWB yang cocok.</td></tr>
+            <tr><td colSpan={grouped ? 8 : 10} className="muted text-center !py-10">Tidak ada data AWB yang cocok.</td></tr>
           )}
         </tbody>
       </table>
@@ -200,7 +205,7 @@ export default function AwbTab({ onChanged, onOpenDetail, onEvent, connected }) 
           Menampilkan {firstEntry}–{lastEntry} dari {filtered.length} baris
           {q && ` (difilter dari ${rows.length})`}
         </span>
-        <div className="flex items-center gap-1">
+        <div className="flex flex-wrap items-center gap-1">
           <PageBtn label="First" disabled={safePage <= 1} onClick={() => goto(1)} />
           <PageBtn label="Prev" disabled={safePage <= 1} onClick={() => goto(safePage - 1)} />
           {Array.from({ length: totalPages }, (_, i) => i + 1).map((n) => (
@@ -220,7 +225,7 @@ export default function AwbTab({ onChanged, onOpenDetail, onEvent, connected }) 
           <PageBtn label="Last" disabled={safePage >= totalPages} onClick={() => goto(totalPages)} />
         </div>
       </div>
-      <p className="muted text-[11.5px] mt-2">{grouped ? "Jumlah manifest dijumlahkan untuk setiap HAWB yang ada di antrean. Klik HAWB untuk detail dan foto X-ray." : "Klik baris untuk melihat detail + foto X-ray ukuran penuh."}</p>
+      <p className="muted text-[11.5px] mt-2">{grouped ? "Klik baris untuk melihat detail dan foto X-ray." : "Klik baris untuk melihat detail + foto X-ray ukuran penuh."}</p>
     </div>
     </div>
   );

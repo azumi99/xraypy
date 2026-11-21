@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -280,6 +280,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     UI_DIST.mkdir(parents=True, exist_ok=True)
     index_file = UI_DIST / "index.html"
 
+    @app.get("/", include_in_schema=False)
+    async def dashboard_index(request: Request):
+        return RedirectResponse("/dashboard"
+                                + (f"?{request.url.query}" if request.url.query else ""),
+                                headers={"Cache-Control": "no-store"})
+
     @app.get("/{full_path:path}", include_in_schema=False)
     async def spa_fallback(full_path: str):
         if full_path and "." in full_path.split("/")[-1]:
@@ -290,7 +296,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             from fastapi import HTTPException
 
             raise HTTPException(status_code=404)
-        return FileResponse(index_file)
+        return FileResponse(index_file, headers={"Cache-Control": "no-cache"})
 
     return app
 

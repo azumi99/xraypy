@@ -953,6 +953,7 @@ class Pipeline:
                 slot["decision"].record.id, embedding, side_ref,
                 model_name=self._dedup.worker.model_name, model_version=self._dedup.worker.model_version,
             )
+            await self._bus.publish("parcel.side_saved", {"batch_id": slot["batch_id"]})
             if side_finalized:
                 await self._enqueue_final_photo(side_ref)
         except Exception:  # noqa: BLE001

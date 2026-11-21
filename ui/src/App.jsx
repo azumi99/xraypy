@@ -119,6 +119,8 @@ function AuthenticatedApp({ user, onLogout, logoutError, logoutPending }) {
   const awbDetailMatch = path.match(/^\/awb\/(\d+)$/);
   const awbDetailId = awbDetailMatch ? Number(awbDetailMatch[1]) : null;
   const [session, setSession] = useState(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  useEffect(() => setMenuOpen(false), [currentPath]);
   const [theme, setTheme] = useState(() => {
     try { return localStorage.getItem("xray-theme") === "light" ? "light" : "dark"; }
     catch { return "dark"; }
@@ -148,7 +150,7 @@ function AuthenticatedApp({ user, onLogout, logoutError, logoutPending }) {
 
   return (
     <div className="min-h-screen md:flex">
-      <aside className="bg-[var(--bg)] border-b-2 md:border-b-0 md:border-r-2 border-[var(--border)] px-4 py-4 flex flex-col gap-4 md:gap-6 md:w-60 md:h-screen md:sticky md:top-0 md:shrink-0">
+      <aside className="bg-[var(--bg)] border-b-2 md:border-b-0 md:border-r-2 border-[var(--border)] px-4 py-4 flex flex-col gap-4 md:overflow-y-auto md:gap-6 md:w-60 md:h-screen md:sticky md:top-0 md:shrink-0">
         <div className="flex gap-3 items-center px-1.5">
           <span className="grid place-items-center w-10 h-10 rounded-xl bg-[var(--secondary)] border-3 border-[var(--text)] shadow-[4px_4px_0_var(--text)] shrink-0 text-[var(--text)]">
             <BoxIcon />
@@ -156,14 +158,19 @@ function AuthenticatedApp({ user, onLogout, logoutError, logoutPending }) {
           <div>
             <b className="block text-[16px] font-extrabold tracking-tight">Xray Cargo</b>
           </div>
+          <button type="button" className="btn-ghost ml-auto min-h-11 md:hidden"
+            aria-expanded={menuOpen} aria-controls="operator-menu" onClick={() => setMenuOpen((open) => !open)}>
+            {menuOpen ? "Tutup menu" : "Menu"}
+          </button>
         </div>
-        <nav aria-label="Navigasi utama" className="flex flex-wrap md:flex-col gap-1.5">
+        <div id="operator-menu" className={`${menuOpen ? "flex" : "hidden"} flex-col gap-4 md:flex md:flex-1 md:gap-6`}>
+        <nav aria-label="Navigasi utama" className="grid grid-cols-2 md:grid-cols-1 gap-1.5">
           {TABS.map((t) => (
             <button
               key={t.path}
-              className={`side-nav-item !w-auto md:!w-full ${activePath === t.path ? "active" : ""}`}
+              className={`side-nav-item !w-full min-h-11 ${activePath === t.path ? "active" : ""}`}
               aria-current={activePath === t.path ? "page" : undefined}
-              onClick={() => navigate(t.path)}
+              onClick={() => { setMenuOpen(false); navigate(t.path); }}
             >
               {t.icon}
               <span className="lbl">{t.label}</span>
@@ -193,6 +200,7 @@ function AuthenticatedApp({ user, onLogout, logoutError, logoutPending }) {
             <span aria-hidden="true" className="theme-switch-track"><span className="theme-switch-thumb" /></span>
             {theme === "dark" ? "Dark" : "Light"}
           </button>
+        </div>
         </div>
       </aside>
 
