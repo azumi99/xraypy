@@ -1,9 +1,11 @@
 """Label import and authenticated endpoints."""
 
 from io import BytesIO
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse
 from openpyxl import load_workbook
 import xlrd
 from pydantic import BaseModel
@@ -74,6 +76,15 @@ def parse_workbook(data: bytes) -> list[tuple]:
 @router.get("")
 async def list_labels(request: Request):
     return await request.app.state.store.list_labels()
+
+
+@router.get("/template")
+async def download_template() -> FileResponse:
+    return FileResponse(
+        Path(__file__).with_name("templates") / "LABEL FEDEX.xlsx",
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename="LABEL FEDEX.xlsx",
+    )
 
 
 @router.post("/import")

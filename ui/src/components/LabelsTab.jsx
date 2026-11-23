@@ -130,6 +130,7 @@ export default function LabelsTab() {
     <section className="panel">
       <div className="awb-section-heading"><div><span className="label-eyebrow">LABEL CARGO · 100 × 50 MM</span><h3>Print Label</h3><p>{rows.length} label tersedia untuk dicetak</p></div>
         <div className="flex flex-wrap gap-2"><input ref={fileRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={(e) => { const file = e.target.files?.[0]; e.target.value = ""; if (file) void upload(file); }} />
+          <a className="btn-ghost" href="/api/labels/template">Download Template</a>
           <button className="btn-clay" disabled={busy} onClick={() => fileRef.current?.click()}>{busy ? "Processing..." : "Import Excel"}</button>
           <button className="btn-ghost" disabled={!filtered.length} onClick={() => print(filtered)}>Print All Filtered</button>
           <button className="btn-ghost" disabled={!selectedRows.length} onClick={() => print(selectedRows)}>Print Selected ({selectedRows.length})</button>
