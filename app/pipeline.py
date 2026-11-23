@@ -516,6 +516,7 @@ class Pipeline:
             "status": {"NEW": "saved"}.get(decision.status, decision.status.lower()),
             "index": decision.record.idx,
             "awb_number": decision.awb.awb_number if decision.awb else decision.record.awb_number,
+            "awb_id": decision.awb.id if decision.awb else getattr(decision.record, "awb_id", None),
             "sim_score": decision.record.sim_score,
             "review_reason": decision.record.review_reason,
             "crop_ref": decision.record.crop_ref,

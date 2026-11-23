@@ -163,7 +163,7 @@ export default function AwbTab({ onChanged, onOpenDetail, onEvent, connected }) 
             <td>{group.hawbGroups[0].nomorAju.join(", ") || "—"}</td>
             <td title={group.airlines === null ? "Manifest tidak tersedia" : undefined}>{group.airlines ?? "…"}</td>
             <td title={group.origin === null ? "Manifest tidak tersedia" : undefined}>{group.origin ?? "…"}</td>
-            <td><span className={`awb-status ${group.status === "INCOMPLETE" ? "st-incomplete" : group.status === "COMPLETE" ? "text-ok" : group.status === "LOADING" || group.status === "UNAVAILABLE" ? "st-waiting" : "text-bad"}`}>{group.scanned} / {group.status === "LOADING" ? "…" : group.expected ?? "tidak tersedia"}</span></td>
+            <td>{group.scanned} / {group.status === "LOADING" ? "…" : group.expected ?? "tidak tersedia"}</td>
             <td><span className={`awb-status ${group.status === "COMPLETE" ? "text-ok" : group.status === "INCOMPLETE" ? "st-incomplete" : group.status === "OVER EXPECTED" ? "text-bad" : "st-waiting"}`}>{group.status}</span></td>
           </tr>) : pageItems.map((a, i) => {
             const canDelete = a.status !== "PAIRED";

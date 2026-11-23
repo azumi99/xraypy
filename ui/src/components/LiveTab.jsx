@@ -71,8 +71,8 @@ export default function LiveTab({ warehouse, frames, session, onSessionChange, o
     scheduleWaitingRefresh(0);
     const unsubscribe = onEvent((event) => {
       if (!shouldRefreshAwbs(event)) return;
-      if (event.type === "parcel.saved" && event.awb_number) {
-        setLeaving((current) => [...new Set([...current, event.awb_number])]);
+      if (event.type === "parcel.saved" && event.awb_id != null) {
+        setLeaving((current) => [...new Set([...current, event.awb_id])]);
         scheduleWaitingRefresh(650);
       } else {
         scheduleWaitingRefresh();
@@ -138,14 +138,14 @@ export default function LiveTab({ warehouse, frames, session, onSessionChange, o
         {waitingError && <p role="alert" className="source-error mb-3">Antrean AWB gagal dimuat. Data mungkin belum terbaru.</p>}
         <ol className="scan-list" aria-label="Antrean AWB menunggu scan">
           {waiting.map((awb, index) => (
-            <li key={awb.id} className={`scan-list-item ${leaving.includes(awb.awb_number) ? "scan-list-item-leaving" : ""}`}>
+            <li key={awb.id} className={`scan-list-item ${leaving.includes(awb.id) ? "scan-list-item-leaving" : ""}`}>
               <span className="scan-list-index">{String(index + 1).padStart(2, "0")}</span>
               <span className="scan-list-number">
                 <span className="scan-list-waybill"><span className="scan-list-waybill-label">MAWB</span><span>{awb.awb_number || "—"}</span></span>
                 <span className="scan-list-waybill"><span className="scan-list-waybill-label">HAWB</span><span>{awb.hawb_number || "—"}</span></span>
                 <span className="scan-list-pieces">{awb.part != null ? `Piece ${awb.part} dari ${awb.total ?? "—"}` : "Piece —"}</span>
               </span>
-              <span className="scan-list-status">{leaving.includes(awb.awb_number) ? "Tersimpan" : "Waiting"}</span>
+              <span className="scan-list-status">{leaving.includes(awb.id) ? "Tersimpan" : "Waiting"}</span>
             </li>
           ))}
         </ol>
