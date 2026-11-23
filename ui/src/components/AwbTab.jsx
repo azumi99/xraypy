@@ -7,7 +7,7 @@ import { shouldRefreshAwbs } from "../awbEvents";
 import { groupManifestRequests } from "../manifestRequests";
 
 const PAGE_SIZES = [10, 25, 50];
-const EMPTY_FILTERS = { mawb: "", hawb: "", airlines: "", flight: "" };
+const EMPTY_FILTERS = { mawb: "", hawb: "", airlines: "", flight: "", from: "", to: "" };
 
 export default function AwbTab({ onChanged, onOpenDetail, onEvent, connected }) {
   const [items, setItems] = useState([]);
@@ -21,6 +21,7 @@ export default function AwbTab({ onChanged, onOpenDetail, onEvent, connected }) 
   const [page, setPage] = useState(1);
   const [manifests, setManifests] = useState({});
   const [filters, setFilters] = useState(EMPTY_FILTERS);
+  const [dateError, setDateError] = useState("");
   const [applied, setApplied] = useState(EMPTY_FILTERS);
   const [loadAllManifests, setLoadAllManifests] = useState(false);
 
@@ -74,7 +75,16 @@ export default function AwbTab({ onChanged, onOpenDetail, onEvent, connected }) 
     return match(item.awb_number, applied.mawb) && match(item.hawb_number, applied.hawb)
       && match(manifest?.airlines_code, applied.airlines) && match(manifest?.flight_no, applied.flight);
   });
-  const rows = grouped ? groupAwbs(filteredItems, manifests, { byHawb: true }) : filteredItems;
+  const fromTime = applied.from ? Date.parse(`${applied.from}:00+07:00`) : -Infinity;
+  const toTime = applied.to ? Date.parse(`${applied.to}:00+07:00`) + 60_000 : Infinity;
+  const matchesTime = (item) => {
+    if (!applied.from && !applied.to) return true;
+    const timestamp = Date.parse(item.created_at);
+    return timestamp >= fromTime && timestamp < toTime;
+  };
+  const rows = grouped
+    ? groupAwbs(filteredItems, manifests, { byHawb: true }).filter((group) => group.items.some(matchesTime))
+    : filteredItems.filter(matchesTime);
   const filtered = !q ? rows : grouped
     ? rows.filter((group) => group.status.toLowerCase().includes(q) || group.items.some(matches) || group.hawbGroups.some((hawb) => hawb.nomorAju.some((aju) => aju.toLowerCase().includes(q))))
     : rows.filter(matches);
@@ -117,14 +127,37 @@ export default function AwbTab({ onChanged, onOpenDetail, onEvent, connected }) 
             <button type="button" className={!grouped ? "btn-clay" : "btn-ghost"} aria-pressed={!grouped} onClick={() => { setGrouped(false); setPage(1); }}>Non-Grouping</button>
           </div>
         </div>
-        <form onSubmit={(e) => { e.preventDefault(); setApplied(filters); setPage(1); }}>
+        <form onSubmit={(e) => {
+          e.preventDefault();
+          if (filters.from && filters.to && filters.from > filters.to) {
+            setDateError("Waktu akhir harus sama dengan atau setelah waktu mulai.");
+            return;
+          }
+          setDateError("");
+          setApplied(filters);
+          setPage(1);
+        }}>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mt-4">
             {[["mawb", "MAWB"], ["hawb", "HAWB"], ["airlines", "Airlines"], ["flight", "Flight"]].map(([key, label]) => {
               const values = items.map((item) => key === "mawb" ? item.awb_number : key === "hawb" ? item.hawb_number : key === "airlines" ? manifests[item.id]?.data?.airlines_code : manifests[item.id]?.data?.flight_no);
               return <FilterSuggestion key={key} label={label} value={filters[key]} values={values} onFocus={() => { if (key === "airlines" || key === "flight") setLoadAllManifests(true); }} onChange={(value) => setFilters((current) => ({ ...current, [key]: value }))} />;
             })}
           </div>
-          <div className="flex gap-3 mt-4"><button className="btn-clay" type="submit">Apply Filters</button><button className="btn-ghost" type="button" onClick={() => { setFilters(EMPTY_FILTERS); setApplied(EMPTY_FILTERS); setPage(1); }}>Reset</button></div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-4">
+            {[["from", "Dari tanggal dan jam (WIB)"], ["to", "Sampai tanggal dan jam (WIB)"]].map(([key, label]) => (
+              <label key={key} className="min-w-0 text-xs font-bold">
+                {label}
+                <input type="datetime-local" className="field mt-1" value={filters[key]}
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    setFilters((current) => ({ ...current, [key]: value }));
+                    setDateError("");
+                  }} />
+              </label>
+            ))}
+          </div>
+          {dateError && <p role="alert" className="text-bad text-xs mt-2">{dateError}</p>}
+          <div className="flex gap-3 mt-4"><button className="btn-clay" type="submit">Apply Filters</button><button className="btn-ghost" type="button" onClick={() => { setDateError(""); setFilters(EMPTY_FILTERS); setApplied(EMPTY_FILTERS); setPage(1); }}>Reset</button></div>
         </form>
       </section>
     <div className="panel awb-table-panel w-full">
@@ -151,7 +184,7 @@ export default function AwbTab({ onChanged, onOpenDetail, onEvent, connected }) 
       <table className="awb-data-table w-full">
         <thead>
           {grouped ? <tr><th>#</th><th>MAWB</th><th>HAWB</th><th>Nomor AJU</th><th>Airlines</th><th>Origin</th><th>Pieces</th><th>Status</th></tr> :
-          <tr><th>#</th><th>MAWB</th><th>HAWB</th><th>Nomor AJU</th><th>Pieces</th><th>Airlines</th><th>Origin</th><th>Status</th><th>Date Time</th><th>Aksi</th></tr>}
+          <tr><th>#</th><th>MAWB</th><th>HAWB</th><th>Nomor AJU</th><th>Pieces</th><th>Airlines</th><th>Origin</th><th>Status</th><th>Date Time (WIB)</th><th>Aksi</th></tr>}
         </thead>
         <tbody>
           {grouped ? pageItems.map((group, i) => <tr key={group.items[0].id} className="cursor-pointer" onClick={() => onOpenDetail?.(group.items[0].id)}>
@@ -178,7 +211,7 @@ export default function AwbTab({ onChanged, onOpenDetail, onEvent, connected }) 
                 <td title={manifests[a.id]?.status === "unavailable" ? "Manifest tidak tersedia" : undefined}>{manifests[a.id] ? (manifests[a.id].data?.airlines_code ?? "—") : "…"}</td>
                 <td title={manifests[a.id]?.status === "unavailable" ? "Manifest tidak tersedia" : undefined}>{manifests[a.id] ? (manifests[a.id].data?.origin ?? "—") : "…"}</td>
                 <td><span className={`awb-status ${statusColor[a.status] ?? ""}`}>{a.status === "PAIRED" ? "COMPLETE" : a.status}</span></td>
-                <td>{a.created_at && !Number.isNaN(new Date(a.created_at).getTime()) ? new Date(a.created_at).toLocaleString("id-ID", { dateStyle: "medium", timeStyle: "short" }) : "—"}</td>
+                <td>{a.created_at && !Number.isNaN(new Date(a.created_at).getTime()) ? new Date(a.created_at).toLocaleString("id-ID", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Jakarta" }) : "—"}</td>
                 <td>
                   <button
                     className="awb-row-delete"
