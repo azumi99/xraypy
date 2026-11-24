@@ -38,7 +38,7 @@ async def push_screen(ws: WebSocket, view: str) -> None:
         await ws.close(code=1008)
         return
     user = identity(ws)
-    if user is None:
+    if user is None or user.get("role") == "bc":
         await ws.close(code=1008)
         return
     token = warehouse_context.set(user["access"])
@@ -87,8 +87,9 @@ async def stream(ws: WebSocket) -> None:
                 event = None
             now = asyncio.get_event_loop().time()
             if now - last_frame >= FRAME_INTERVAL_S:
-                frame = pipeline.latest_annotated() if pipeline is not None else None
-                side = pipeline.latest_annotated_side() if pipeline is not None else None
+                show_preview = pipeline is not None and user.get("role") != "bc"
+                frame = pipeline.latest_annotated() if show_preview else None
+                side = pipeline.latest_annotated_side() if show_preview else None
                 has_preview = frame is not None or side is not None
                 if has_preview or had_preview:
                     msg: dict = {
@@ -107,7 +108,7 @@ async def stream(ws: WebSocket) -> None:
                     await ws.send_json(msg)
                 had_preview = has_preview
                 last_frame = now
-            if event is not None:
+            if event is not None and (user.get("role") != "bc" or event["type"].startswith(("awb.", "parcel.", "session."))):
                 await ws.send_json(event)
     except Exception as exc:  # noqa: BLE001 — client disconnects land here
         logger.debug("stream closed: %s", exc)

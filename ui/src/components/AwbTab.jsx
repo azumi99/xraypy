@@ -9,7 +9,7 @@ import { groupManifestRequests } from "../manifestRequests";
 const PAGE_SIZES = [10, 25, 50];
 const EMPTY_FILTERS = { mawb: "", hawb: "", airlines: "", flight: "", from: "", to: "" };
 
-export default function AwbTab({ onChanged, onOpenDetail, onEvent, connected }) {
+export default function AwbTab({ onChanged, onOpenDetail, onEvent, connected, readOnly = false }) {
   const [items, setItems] = useState([]);
   const [error, setError] = useState(null);
   const grouped = useAwbDisplayStore((s) => s.grouped);
@@ -184,7 +184,7 @@ export default function AwbTab({ onChanged, onOpenDetail, onEvent, connected }) 
       <table className="awb-data-table w-full">
         <thead>
           {grouped ? <tr><th>#</th><th>MAWB</th><th>HAWB</th><th>Nomor AJU</th><th>Airlines</th><th>Origin</th><th>Pieces</th><th>Status</th></tr> :
-          <tr><th>#</th><th>MAWB</th><th>HAWB</th><th>Nomor AJU</th><th>Pieces</th><th>Airlines</th><th>Origin</th><th>Status</th><th>Date Time (WIB)</th><th>Aksi</th></tr>}
+          <tr><th>#</th><th>MAWB</th><th>HAWB</th><th>Nomor AJU</th><th>Pieces</th><th>Airlines</th><th>Origin</th><th>Status</th><th>Date Time (WIB)</th>{!readOnly && <th>Aksi</th>}</tr>}
         </thead>
         <tbody>
           {grouped ? pageItems.map((group, i) => <tr key={group.items[0].id} className="cursor-pointer" onClick={() => onOpenDetail?.(group.items[0].id)}>
@@ -212,7 +212,7 @@ export default function AwbTab({ onChanged, onOpenDetail, onEvent, connected }) 
                 <td title={manifests[a.id]?.status === "unavailable" ? "Manifest tidak tersedia" : undefined}>{manifests[a.id] ? (manifests[a.id].data?.origin ?? "—") : "…"}</td>
                 <td><span className={`awb-status ${statusColor[a.status] ?? ""}`}>{a.status === "PAIRED" ? "COMPLETE" : a.status}</span></td>
                 <td>{a.created_at && !Number.isNaN(new Date(a.created_at).getTime()) ? new Date(a.created_at).toLocaleString("id-ID", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Jakarta" }) : "—"}</td>
-                <td>
+                {!readOnly && <td>
                   <button
                     className="awb-row-delete"
                     title={title}
@@ -221,12 +221,12 @@ export default function AwbTab({ onChanged, onOpenDetail, onEvent, connected }) 
                   >
                     <TrashIcon /> Hapus
                   </button>
-                </td>
+                </td>}
               </tr>
             );
           })}
           {filtered.length === 0 && (
-            <tr><td colSpan={grouped ? 8 : 10} className="muted text-center !py-10">Tidak ada data AWB yang cocok.</td></tr>
+            <tr><td colSpan={grouped ? 8 : readOnly ? 9 : 10} className="muted text-center !py-10">Tidak ada data AWB yang cocok.</td></tr>
           )}
         </tbody>
       </table>

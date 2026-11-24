@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import api from "./api";
 import { useStream } from "./hooks/useStream";
 import LiveTab from "./components/LiveTab";
@@ -61,17 +61,86 @@ export default function App() {
     return () => { cancelled = true; };
   }, [retry]);
 
+  const [captcha, setCaptcha] = useState(null);
+  const [captchaToken, setCaptchaToken] = useState("");
+  const [widgetError, setWidgetError] = useState("");
+  const captchaContainer = useRef(null);
+  const captchaWidget = useRef(null);
+  const [captchaError, setCaptchaError] = useState(false);
+  const loadCaptcha = useCallback(async (signal) => {
+    setCaptcha(null);
+    setCaptchaToken("");
+    setCaptchaError(false);
+    try {
+      const challenge = await api("/auth/captcha", { signal, cache: "no-store" });
+      if (!signal?.aborted) setCaptcha(challenge);
+    } catch {
+      if (!signal?.aborted) setCaptchaError(true);
+    }
+  }, []);
+  useEffect(() => {
+    if (auth !== false) return;
+    const controller = new AbortController();
+    void loadCaptcha(controller.signal);
+    return () => controller.abort();
+  }, [auth, loadCaptcha]);
+
+  const siteKey = auth === false ? captcha?.site_key : null;
+  useEffect(() => {
+    if (!siteKey) return;
+    setWidgetError("");
+    const script = document.createElement("script");
+    const render = () => {
+      if (!captchaContainer.current || !window.turnstile) return;
+      captchaWidget.current = window.turnstile.render(captchaContainer.current, {
+        sitekey: siteKey,
+        action: "web_login",
+        size: "flexible",
+        callback: (token) => {
+          setWidgetError("");
+          setCaptchaToken(token);
+        },
+        "expired-callback": () => setCaptchaToken(""),
+        "error-callback": (code) => {
+          setCaptchaToken("");
+          setWidgetError(String(code || "unknown"));
+        },
+      });
+    };
+    if (window.turnstile) render();
+    else {
+      script.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+      script.async = true;
+      script.onload = render;
+      script.onerror = () => setWidgetError("script");
+      document.head.appendChild(script);
+    }
+    return () => {
+      script.onload = script.onerror = null;
+      script.remove();
+      if (captchaWidget.current !== null) window.turnstile?.remove(captchaWidget.current);
+      captchaWidget.current = null;
+    };
+  }, [siteKey]);
+
   async function login(event) {
     event.preventDefault();
+    if (!captcha || (siteKey && !captchaToken)) return;
     setError("");
     setPending(true);
     try {
-      const response = await fetch("/api/auth/login", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email, password }) });
-      if (!response.ok) throw new Error();
+      const response = await fetch("/api/auth/web-login", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email, password, captcha_token: captchaToken }) });
+      if (!response.ok) throw new Error(response.status === 422
+        ? "Verifikasi Turnstile gagal atau kedaluwarsa."
+        : "Login gagal. Periksa email dan password Anda.");
       setPassword("");
       setAuth(null);
       setRetry((value) => value + 1);
-    } catch { setError("Login gagal. Periksa email dan password Anda."); }
+    } catch (error) {
+      setError(error.message === "Failed to fetch" ? "Login gagal. Periksa koneksi Anda." : error.message);
+      setCaptchaToken("");
+      if (captchaWidget.current !== null) window.turnstile?.reset(captchaWidget.current);
+    }
     finally { setPending(false); }
   }
 
@@ -95,8 +164,21 @@ export default function App() {
         <input id="email" type="email" autoComplete="username" required value={email} onChange={(e) => setEmail(e.target.value)} className="w-full rounded-xl border-2 border-[var(--border)] bg-[var(--bg-cream)] px-3 py-3 text-[var(--text)] focus:outline-2 focus:outline-[var(--cta)]" />
         <label htmlFor="password" className="text-sm font-bold">Password</label>
         <input id="password" type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} className="w-full rounded-xl border-2 border-[var(--border)] bg-[var(--bg-cream)] px-3 py-3 text-[var(--text)] focus:outline-2 focus:outline-[var(--cta)]" />
+        {siteKey && <div ref={captchaContainer} />}
+        {(captchaError || widgetError) && <p role="alert" className="text-sm text-red-400">
+          {widgetError === "110200"
+            ? `Cloudflare belum mengizinkan hostname ${window.location.hostname} (110200).`
+            : widgetError && /^\d+$/.test(widgetError)
+              ? `Verifikasi Cloudflare gagal (${widgetError}).`
+              : "Verifikasi Cloudflare tidak dapat dimuat."}{" "}
+          {widgetError !== "110200" && <button type="button" className="underline" onClick={() => {
+            setWidgetError("");
+            if (captchaWidget.current !== null) window.turnstile?.reset(captchaWidget.current);
+            else window.location.reload();
+          }}>Coba lagi</button>}
+        </p>}
         {error && <p role="alert" className="text-sm text-red-400">{error}</p>}
-        <button className="btn-clay" type="submit" disabled={pending}>{pending ? "Memuat..." : "Masuk"}</button>
+        <button className="btn-clay" type="submit" disabled={pending || !captcha || Boolean(siteKey && !captchaToken)}>{pending ? "Memuat..." : "Masuk"}</button>
       </form>
     </main>
   );
@@ -105,7 +187,10 @@ export default function App() {
 
 function AuthenticatedApp({ user, onLogout, logoutError, logoutPending }) {
   const [currentPath, navigateRoute] = usePathRoute();
-  const canonicalPath = warehousePath(currentPath, user.access);
+  const readOnly = user.role === "bc";
+  const requestedPath = warehousePath(currentPath, user.access);
+  const canonicalPath = readOnly && !/^\/(?:dashboard|awb(?:\/\d+)?)$/.test(requestedPath.slice(user.access.length + 1))
+    ? warehousePath("/dashboard", user.access) : requestedPath;
   const path = canonicalPath.slice(user.access.length + 1);
   const navigate = (to) => navigateRoute(`/${user.access}${to}`);
   useEffect(() => {
@@ -165,7 +250,7 @@ function AuthenticatedApp({ user, onLogout, logoutError, logoutPending }) {
         </div>
         <div id="operator-menu" className={`${menuOpen ? "flex" : "hidden"} flex-col gap-4 md:flex md:flex-1 md:gap-6`}>
         <nav aria-label="Navigasi utama" className="grid grid-cols-2 md:grid-cols-1 gap-1.5">
-          {TABS.map((t) => (
+          {TABS.filter((tab) => !readOnly || ["/dashboard", "/awb"].includes(tab.path)).map((t) => (
             <button
               key={t.path}
               className={`side-nav-item !w-full min-h-11 ${activePath === t.path ? "active" : ""}`}
@@ -179,7 +264,7 @@ function AuthenticatedApp({ user, onLogout, logoutError, logoutPending }) {
         </nav>
         <div className="sidebar-footer md:mt-auto">
           <div className="sidebar-account">
-            <div className="sidebar-account-heading"><span>AKUN OPERATOR</span><span className="sidebar-warehouse">{user.access.toUpperCase()}</span></div>
+            <div className="sidebar-account-heading"><span>{readOnly ? "BEA CUKAI" : "AKUN OPERATOR"}</span><span className="sidebar-warehouse">{user.access.toUpperCase()}</span></div>
             <span className="sidebar-email">{user.email}</span>
             <button type="button" className="sidebar-logout" onClick={onLogout} disabled={logoutPending}>{logoutPending ? "Memuat..." : "Logout"}</button>
             {logoutError && <p role="alert" className="text-sm text-red-400">{logoutError}</p>}
@@ -221,19 +306,20 @@ function AuthenticatedApp({ user, onLogout, logoutError, logoutPending }) {
         </div>
         <main className="p-4 sm:px-7 pb-7 w-full min-w-0">
           {activePath === "/dashboard" && <Suspense fallback={<div className="panel muted">Memuat dashboard…</div>}><Dashboard session={session} onEvent={onEvent} /></Suspense>}
-          <div hidden={activePath !== "/live"}>
+          {!readOnly && <div hidden={activePath !== "/live"}>
             <LiveTab key={user.access} warehouse={user.access} frames={frames} session={session}
               visible={activePath === "/live"} onSessionChange={refreshSession} onEvent={onEvent}
               connected={connected} waitingEventsAvailable={waitingEventsAvailable} />
-          </div>
+          </div>}
           {activePath === "/awb" && !awbDetailId && (
-            <AwbTab onChanged={refreshSession} onOpenDetail={(id) => navigate(`/awb/${id}`)} onEvent={onEvent} connected={connected} />
+            <AwbTab readOnly={readOnly} onChanged={refreshSession} onOpenDetail={(id) => navigate(`/awb/${id}`)} onEvent={onEvent} connected={connected} />
           )}
           {activePath === "/labels" && <LabelsTab />}
           {activePath === "/settings" && <SettingsTab warehouse={user.access} />}
           {awbDetailId && (
             <AwbDetailPage
               id={awbDetailId}
+              readOnly={readOnly}
               onBack={() => navigate("/awb")}
               onChanged={refreshSession}
             />

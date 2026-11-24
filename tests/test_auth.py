@@ -204,3 +204,49 @@ def test_authenticated_warehouse_awb_isolation(tmp_path, monkeypatch):
         client.post("/api/auth/login", json={"email": "cas@paratekno.com", "password": "admin123"})
         assert client.get("/api/session/state").json()["running"] is True
         assert client.post("/api/session/stop").status_code == 200
+
+
+def test_web_login_validates_turnstile(client, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    settings = client.app.state.settings
+    settings.turnstile_site_key = "site-key"
+    settings.turnstile_secret_key = "secret-key"
+    response = client.get("/api/auth/captcha")
+    assert response.headers["cache-control"] == "no-store"
+    assert response.json() == {"site_key": "site-key"}
+
+    body = {"email": "cas@paratekno.com", "password": "admin123"}
+    assert client.post("/api/auth/web-login", json=body).status_code == 422
+    result = {"success": False}
+    verify = AsyncMock(return_value=SimpleNamespace(raise_for_status=lambda: None, json=lambda: result))
+    context = AsyncMock()
+    context.__aenter__.return_value = SimpleNamespace(post=verify)
+    monkeypatch.setattr("app.main.httpx.AsyncClient", lambda **kwargs: context)
+    assert client.post("/api/auth/web-login", json={**body, "captcha_token": "test"}).status_code == 422
+    result.update(success=True, action="web_login")
+    assert client.post("/api/auth/web-login", json={**body, "captcha_token": "test"}).status_code == 200
+
+
+@pytest.mark.parametrize("warehouse", ["bgd", "cas"])
+def test_bc_account_has_warehouse_scoped_read_only_access(client, warehouse):
+    settings = client.app.state.settings
+    setattr(settings, f"bc_{warehouse}_password", "test-bc-password")
+    store = AuthStore(settings, None)
+    asyncio.run(store.initialize())
+    store.close()
+    login = client.post("/api/auth/login", json={
+        "email": f"bc-{warehouse}@paratekno.com", "password": "test-bc-password",
+    })
+    assert login.status_code == 200
+    assert client.get("/api/auth/session").json()["user"]["role"] == "bc"
+    assert client.get("/api/auth/session").json()["user"]["access"] == warehouse
+    assert client.delete("/api/awb/1?force=true").status_code == 403
+    assert client.post("/api/session/start").status_code == 403
+    assert client.get("/api/settings/tunnels").status_code == 403
+    assert client.get("/live", follow_redirects=False).headers["location"] == f"/{warehouse}/dashboard"
+    opposite_crop = "/crops/other.png" if warehouse == "cas" else "/crops/cas/other.png"
+    assert client.get(opposite_crop).status_code == 403
+    with pytest.raises(WebSocketDisconnect):
+        with client.websocket_connect("wss://testserver/ws/push/top"):
+            pass

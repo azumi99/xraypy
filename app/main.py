@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
 
+import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -35,6 +37,7 @@ from .security import (
     SESSION_SECONDS,
     identity,
     issue_session,
+    public_user,
     require_operator,
     same_origin,
     session_claims,
@@ -50,6 +53,10 @@ UI_DIST = Path(__file__).parent.parent / "ui" / "dist"
 class Login(BaseModel):
     email: str
     password: str
+
+
+class WebLogin(Login):
+    captcha_token: str = ""
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -171,9 +178,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if request.method not in ("GET", "HEAD", "OPTIONS") and not same_origin(request):
                 return JSONResponse({"detail": "invalid origin"}, status_code=403)
             claims = session_claims(request)
-            user = {"email": claims["sub"], "access": claims["access"]} if claims else None
-            if path not in ("/api/auth/login", "/api/auth/session", "/api/auth/logout") and not user:
+            user = public_user({"email": claims["sub"], "access": claims["access"], "role": claims.get("role")}) if claims else None
+            if path not in ("/api/auth/login", "/api/auth/web-login", "/api/auth/captcha", "/api/auth/session", "/api/auth/logout") and not user:
                 return JSONResponse({"detail": "authentication required"}, status_code=401)
+            if user and user.get("role") == "bc":
+                auth_path = path.startswith("/api/auth/")
+                read_only = request.method in ("GET", "HEAD") and (
+                    path.startswith("/crops/")
+                    or path in {"/api/awb", "/api/session/state", "/api/session/batches",
+                                "/api/sync/status", "/api/sync/photo"}
+                    or re.fullmatch(r"/api/awb/[0-9]+(?:/manifest)?", path)
+                )
+                if not auth_path and not read_only:
+                    return JSONResponse({"detail": "forbidden"}, status_code=403)
             if user and (path == "/crops" or path.startswith("/crops/")):
                 crop = Path(path.removeprefix("/crops/")).parts
                 is_cas_path = bool(crop) and crop[0].casefold() == "cas"
@@ -200,6 +217,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         user = identity(request)
         return JSONResponse({"authenticated": user is not None, "user": user}, headers={"Cache-Control": "no-store"})
 
+    @app.get("/api/auth/captcha")
+    async def login_captcha():
+        if bool(settings.turnstile_site_key) != bool(settings.turnstile_secret_key):
+            raise HTTPException(503, "Turnstile configuration incomplete")
+        return JSONResponse({"site_key": settings.turnstile_site_key}, headers={"Cache-Control": "no-store"})
+
+    @app.post("/api/auth/web-login")
+    async def web_login(request: Request, body: WebLogin):
+        if bool(settings.turnstile_site_key) != bool(settings.turnstile_secret_key):
+            raise HTTPException(503, "Turnstile configuration incomplete")
+        if settings.turnstile_secret_key:
+            if not 0 < len(body.captcha_token) <= 2048:
+                raise HTTPException(422, "Verifikasi Turnstile diperlukan.")
+            try:
+                async with httpx.AsyncClient(timeout=5) as client:
+                    verification = await client.post(
+                        "https://challenges.cloudflare.com/turnstile/v0/siteverify",
+                        data={"secret": settings.turnstile_secret_key, "response": body.captcha_token},
+                    )
+                    verification.raise_for_status()
+                    result = verification.json()
+            except (httpx.HTTPError, ValueError):
+                raise HTTPException(503, "Verifikasi Turnstile tidak tersedia.") from None
+            if not isinstance(result, dict) or result.get("success") is not True or result.get("action") != "web_login":
+                raise HTTPException(422, "Verifikasi Turnstile gagal.")
+        return await login(request, body)
+
     @app.post("/api/auth/login")
     async def login(request: Request, body: Login):
         if not settings.jwt_secret or len(settings.jwt_secret.encode()) < 32:
@@ -208,7 +252,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not user or not await asyncio.to_thread(verify_password, body.password, user["password_hash"]):
             return JSONResponse({"detail": "invalid credentials"}, status_code=401)
         token, _claims = issue_session(settings, user)
-        response = JSONResponse({"authenticated": True, "user": {"email": user["email"], "access": user["access"]}}, headers={"Cache-Control": "no-store"})
+        response = JSONResponse({"authenticated": True, "user": public_user(user)}, headers={"Cache-Control": "no-store"})
         response.set_cookie(COOKIE, token, max_age=SESSION_SECONDS, httponly=True, samesite="strict", secure=request.url.scheme == "https", path="/")
         return response
 
@@ -287,7 +331,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                 headers={"Cache-Control": "no-store"})
 
     @app.get("/{full_path:path}", include_in_schema=False)
-    async def spa_fallback(full_path: str):
+    async def spa_fallback(full_path: str, request: Request):
         if full_path and "." in full_path.split("/")[-1]:
             root = UI_DIST.resolve()
             candidate = (root / full_path).resolve()
@@ -296,6 +340,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             from fastapi import HTTPException
 
             raise HTTPException(status_code=404)
+        page = re.sub(r"^(?:bgd|cas)/", "", full_path)
+        user = identity(request)
+        if user and user.get("role") == "bc" and not re.fullmatch(r"dashboard|awb(?:/[0-9]+)?", page):
+            return RedirectResponse(f"/{user['access']}/dashboard", headers={"Cache-Control": "no-store"})
         return FileResponse(index_file, headers={"Cache-Control": "no-cache"})
 
     return app

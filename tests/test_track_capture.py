@@ -127,13 +127,13 @@ def test_independent_side_pairing_and_color_crops(tmp_path, monkeypatch):
         labels = []
         times = iter([datetime(2020, 1, 1, 0, 0, second, tzinfo=UTC) for second in (1, 2, 3, 4)])
         monkeypatch.setattr(pipeline_module, "datetime", SimpleNamespace(now=lambda: next(times)))
-        put_text = cv2.putText
+        put_text = pipeline_module.ImageDraw.ImageDraw.text
 
-        def record_text(image, text, origin, *args):
+        def record_text(image, origin, text, **kwargs):
             labels.append(text)
-            return put_text(image, text, origin, *args)
+            return put_text(image, origin, text, **kwargs)
 
-        monkeypatch.setattr(cv2, "putText", record_text)
+        monkeypatch.setattr(pipeline_module.ImageDraw.ImageDraw, "text", record_text)
         dedup = MagicMock()
         dedup.store.get_by_track = AsyncMock(return_value=None)
         dedup.worker.embed = AsyncMock(return_value=None)
@@ -228,13 +228,13 @@ def test_capture_long_fields_and_tiny_image(tmp_path, monkeypatch):
     awb = SimpleNamespace(awb_number="M" * 130, hawb_number="h" * 140, part=123)
     captured = datetime(2020, 2, 3, 4, 5, 6, tzinfo=UTC)
     calls = []
-    put_text = cv2.putText
+    put_text = pipeline_module.ImageDraw.ImageDraw.text
 
-    def record(image, text, origin, *args):
+    def record(image, origin, text, **kwargs):
         calls.append((text, origin))
-        return put_text(image, text, origin, *args)
+        return put_text(image, origin, text, **kwargs)
 
-    monkeypatch.setattr(cv2, "putText", record)
+    monkeypatch.setattr(pipeline_module.ImageDraw.ImageDraw, "text", record)
     path = tmp_path / "tiny.png"
     _save_capture(path, image, "side", awb, captured_at=captured)
     saved = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
@@ -298,13 +298,13 @@ def test_saved_watermark_overlay_preserves_original_and_existing_file(tmp_path, 
     original = np.random.default_rng(7).integers(0, 256, (60, 320, 4), dtype=np.uint8)
     copy = original.copy()
     calls = []
-    put_text = cv2.putText
+    put_text = pipeline_module.ImageDraw.ImageDraw.text
 
-    def record_text(image, text, origin, *args):
+    def record_text(image, origin, text, **kwargs):
         calls.append((text, origin))
-        return put_text(image, text, origin, *args)
+        return put_text(image, origin, text, **kwargs)
 
-    monkeypatch.setattr(cv2, "putText", record_text)
+    monkeypatch.setattr(pipeline_module.ImageDraw.ImageDraw, "text", record_text)
     path = tmp_path / "capture.png"
     _save_capture(path, original, view)
     saved = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
@@ -331,13 +331,13 @@ def test_capture_modes_save_both_views_without_watermarking_dedup(tmp_path, monk
         pipeline.session.batch_id = "batch"
         pipeline._apply_decision = AsyncMock()
         labels = []
-        put_text = cv2.putText
+        put_text = pipeline_module.ImageDraw.ImageDraw.text
 
-        def record_text(image, text, origin, *args):
+        def record_text(image, origin, text, **kwargs):
             labels.append(text)
-            return put_text(image, text, origin, *args)
+            return put_text(image, origin, text, **kwargs)
 
-        monkeypatch.setattr(cv2, "putText", record_text)
+        monkeypatch.setattr(pipeline_module.ImageDraw.ImageDraw, "text", record_text)
         frame = np.full((100, 400, 3), (12, 34, 56), dtype=np.uint8)
         if mode == "track":
             slot = {"batch_id": "batch", "seq": 1, "side": frame.copy(), "decision": None}
@@ -699,3 +699,37 @@ async def test_wide_flat_top_capture_triggers_as_soon_as_both_ends_clear():
     await asyncio.sleep(0)
     pipeline._capture_with_effect.assert_awaited_once()
     assert len(pipeline._pending_top) == 1
+
+
+@pytest.mark.parametrize("view", ["top", "side"])
+async def test_last_parcel_can_stop_before_normal_capture_margin(view):
+    pipeline = Pipeline(Settings(_env_file=None), MagicMock(), MagicMock(), MagicMock())
+    pipeline.session.batch_id = "batch"
+    pipeline._capture_with_effect = AsyncMock()
+    detector = "_detector" if view == "top" else "_side_detector"
+    # Detector boxes look clear on the second frame while the silhouette still touches the edge.
+    boxes = iter([(0, 80, 179, 159), (16, 80, 179, 159), (16, 80, 195, 159), (16, 80, 195, 159)])
+    setattr(pipeline, detector, SimpleNamespace(process=lambda _: [
+        SimpleNamespace(parcel_id=1, bbox=next(boxes), conf=0.9),
+    ]))
+    roi_start, _ = pipeline._track_roi_rows(480, view)
+
+    def frame(left):
+        image = np.full((480, 720, 3), 220, np.uint8)
+        image[roi_start + 80:roi_start + 160, left:left + 180] = 90
+        return image
+
+    for left in (0, 0):
+        await pipeline._process_track_frame({view: frame(left)})
+        assert not pipeline._pending_top and not pipeline._pending_side
+
+    for left in (16, 16):
+        await pipeline._process_track_frame({view: frame(left)})
+    if view == "top":
+        assert len(pipeline._pending_top) == 1
+        await asyncio.sleep(0)
+        pipeline._capture_with_effect.assert_awaited_once()
+        assert pipeline._capture_with_effect.call_args.args[0].bbox == (16, roi_start + 80, 195, roi_start + 159)
+    else:
+        candidate, = pipeline._pending_side
+        assert np.count_nonzero(candidate["side"][:, :, 0] == 90) == 180 * 80

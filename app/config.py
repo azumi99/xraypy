@@ -199,6 +199,10 @@ class Settings(BaseSettings):
     stream_token: str | None = None
     login_password: str | None = None
     jwt_secret: str | None = None
+    bc_bgd_password: str | None = None
+    bc_cas_password: str | None = None
+    turnstile_site_key: str | None = None
+    turnstile_secret_key: str | None = None
     bootstrap_password: str | None = None
     photo_sync_enabled: bool = False
     photo_sync_url: str = ""

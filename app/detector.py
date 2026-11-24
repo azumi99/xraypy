@@ -545,7 +545,7 @@ def _merge_wrappers(boxes: list[tuple[int, int, int, int]], frame: np.ndarray, w
     return [merged.get(i, box) for i, box in enumerate(boxes) if i not in used]
 
 
-def side_capture_silhouettes(frame: np.ndarray) -> list[tuple[int, int, int, int]]:
+def capture_silhouettes(frame: np.ndarray) -> list[tuple[int, int, int, int]]:
     """Find capture silhouettes, including components that still touch an edge."""
     h, w = frame.shape[:2]
     band = frame[:max(3, h // 20)].astype(np.int16)

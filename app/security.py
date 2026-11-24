@@ -26,6 +26,8 @@ def issue_session(settings, user: dict) -> tuple[str, dict]:
         "sub": user["email"], "access": user["access"], "iat": now,
         "exp": now + SESSION_SECONDS, "jti": secrets.token_urlsafe(32),
     }
+    if user.get("role") == "bc":
+        claims["role"] = "bc"
     return jwt.encode(claims, settings.jwt_secret, algorithm="HS256"), claims
 
 
@@ -49,7 +51,16 @@ def session_claims(connection) -> dict | None:
 
 def identity(connection):
     claims = session_claims(connection)
-    return {"email": claims["sub"], "access": claims["access"]} if claims else None
+    if claims is None:
+        return None
+    return public_user({"email": claims["sub"], "access": claims["access"], "role": claims.get("role")})
+
+
+def public_user(user: dict) -> dict:
+    result = {"email": user["email"], "access": user["access"]}
+    if user.get("role") == "bc":
+        result["role"] = "bc"
+    return result
 
 
 def authorized(connection) -> bool:

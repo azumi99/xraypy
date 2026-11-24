@@ -21,6 +21,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+from PIL import Image, ImageDraw, ImageFont
 
 from .config import Settings
 from .dedup.service import Decision, DedupService
@@ -127,31 +128,26 @@ def _save_capture(path: Path, bgra: np.ndarray, view: str, awb=None, *, captured
         raise ValueError(f"invalid capture view: {view}")
     footer = f"{field('awb_number')} | {field('hawb_number')} | {field('part')} | {field('total')} | {view}".upper()
     height, width = bgra.shape[:2]
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    canvas_width = max(width, 1)
-    scale, padding, line_height = 0.27, 3, 12
+    font = ImageFont.truetype(str(Path(__file__).with_name("assets") / "poppins" / "Poppins-Bold.ttf"), 7)
+    padding = min(3, max(0, (width - 1) // 2))
+    line_height = 9
+    limit = width - 2 * padding
+    footer_lines = []
+    while footer:
+        end = len(footer)
+        while end > 1 and font.getlength(footer[:end]) > limit:
+            end //= 2
+        while end < len(footer) and font.getlength(footer[:end + 1]) <= limit:
+            end += 1
+        footer_lines.append(footer[:end])
+        footer = footer[end:]
 
-    def lines(text, max_width=None):
-        limit = max_width if max_width is not None else canvas_width - 2 * padding
-        result = []
-        while text:
-            end = len(text)
-            while end > 1 and cv2.getTextSize(text[:end], font, scale, 1)[0][0] > limit:
-                end //= 2
-            # Extend to use the available width after the initial search.
-            while end < len(text) and cv2.getTextSize(text[:end + 1], font, scale, 1)[0][0] <= limit:
-                end += 1
-            result.append(text[:end])
-            text = text[end:]
-        return result
-
-    footer_lines = lines(footer)
     footer_height = len(footer_lines) * line_height + 2 * padding
-    output = np.zeros((height + footer_height, canvas_width, 4), dtype=np.uint8)
-    output[height:, :, 3] = 255
-    output[:height, :width] = bgra
+    footer_image = Image.new("RGBA", (width, footer_height), "#152630")
+    draw = ImageDraw.Draw(footer_image)
     for i, text in enumerate(footer_lines):
-        cv2.putText(output, text, (padding, height + padding + 8 + i * line_height), font, scale, (255, 255, 255, 255), 1, cv2.LINE_AA)
+        draw.text((padding, padding + i * line_height), text, font=font, fill="#f2f6fa", anchor="lt")
+    output = np.concatenate((bgra, cv2.cvtColor(np.asarray(footer_image), cv2.COLOR_RGBA2BGRA)))
     from .photo_sync import mark_final_png
     _write_capture(path, mark_final_png(encode_png(output)), owned=owned, dir_fd=dir_fd)
 
@@ -581,8 +577,36 @@ class Pipeline:
                 and x1 > state["entry_x"] and x1 >= left_margin and y1 >= h * 6 / 360
                 and x2 <= w - right_margin and bottom_visible)
 
+    @staticmethod
+    def _capture_bounds(bbox, silhouettes):
+        x1, y1, x2, y2 = bbox
+        box_area = max(1, (x2 - x1) * (y2 - y1))
+        best_overlap = 0
+        bounds = bbox
+        for left, top, right, bottom in silhouettes:
+            overlap = max(0, min(x2, right) - max(x1, left)) * max(0, min(y2, bottom) - max(y1, top))
+            if overlap >= 0.25 * box_area and overlap > best_overlap:
+                best_overlap = overlap
+                bounds = min(x1, left), min(y1, top), max(x2, right), max(y2, bottom)
+        return bounds, best_overlap > 0
+
+    def _track_capture_trigger(self, det, state, shape, silhouettes, *, side_belt_edge=False):
+        bounds, verified = self._capture_bounds(det.bbox, silhouettes)
+        h, w = shape[:2]
+        left, top, right, bottom = bounds
+        clearance = min(left, w - 1 - right)
+        edge = max(1, round(w * 6 / 640))
+        visible = (clearance >= edge and top >= max(1, round(h * 6 / 360))
+                   and (bottom < h - 1 or side_belt_edge))
+        # A verified silhouette permits capture before the usual crop margin.
+        early = verified and state["hits"] >= 2 and state["entered"] and left > state["entry_x"]
+        ready = visible and not state["captured"] and (
+            early or self._capture_ready(det, state, shape, side_belt_edge=side_belt_edge)
+        )
+        return bounds, verified, visible, ready
+
     async def _process_track_frame(self, frames: dict[str, np.ndarray]) -> None:
-        from .detector import ParcelDetection, ParcelTracker, make_detector
+        from .detector import ParcelDetection, ParcelTracker, capture_silhouettes, make_detector
 
         captured_at = time.monotonic()
         batch_id = self.session.batch_id
@@ -607,6 +631,8 @@ class Pipeline:
             parcels = await asyncio.to_thread(self._detector.process, top, reference_delta=delta)
         else:
             parcels = await asyncio.to_thread(self._detector.process, top)
+        silhouettes = (await asyncio.to_thread(capture_silhouettes, top)
+                       if any(getattr(det, "observed", True) for det in parcels) else [])
         self._annotated_source = top
 
         # live tracking overlays + auto-capture: parcel masuk dari kiri,
@@ -635,14 +661,16 @@ class Pipeline:
             else:
                 ov.x1, ov.x2, ov.y1, ov.y2 = float(x1), float(x2), float(y1), float(y2)
                 ov.conf = det.conf
-            if self._capture_ready(det, st, top.shape):
+            bounds, _, _, ready = self._track_capture_trigger(det, st, top.shape, silhouettes)
+            if ready:
+                left, upper, right, lower = bounds
                 st["captured"] = True
                 st["capturing"] = True
                 slot = {"batch_id": batch_id, "seq": det.parcel_id, "decision": None, "side": None, "time": captured_at, "captured_at": datetime.now().astimezone()}
                 slot["side_ready"] = asyncio.get_running_loop().create_future()
-                slot["belt_span"] = (x1 / W, x2 / W)
+                slot["belt_span"] = (left / W, right / W)
                 self._queue_track_capture(self._pending_top, slot)
-                capture_det = ParcelDetection(det.parcel_id, (x1, y1 + top_y0, x2, y2 + top_y0), det.conf)
+                capture_det = ParcelDetection(det.parcel_id, (left, upper + top_y0, right, lower + top_y0), det.conf)
                 asyncio.create_task(self._capture_with_effect(capture_det, full_top.copy(), slot, batch_id, st))
             self.overlays[det.parcel_id].capturing = st["capturing"]
         for tid in list(self._track_states):
@@ -661,7 +689,7 @@ class Pipeline:
             self._annotated_side = None
 
     async def _process_side_track_frame(self, side: np.ndarray, captured_at: float | None = None, batch_id: str | None = None) -> None:
-        from .detector import ParcelTracker, make_detector, side_capture_silhouettes
+        from .detector import ParcelTracker, make_detector, capture_silhouettes
 
         if captured_at is None:
             captured_at = time.monotonic()
@@ -678,9 +706,8 @@ class Pipeline:
             kwargs["reference_delta"] = delta
         parcels = await asyncio.to_thread(self._side_detector.process, side, **kwargs)
         h, w = side.shape[:2]
-        silhouettes = (await asyncio.to_thread(side_capture_silhouettes, side)
+        silhouettes = (await asyncio.to_thread(capture_silhouettes, side)
                        if any(getattr(det, "observed", True) for det in parcels) else [])
-        edge = max(1, round(w * 6 / 640))
         seen = set()
         overlays = []
         for det in parcels:
@@ -695,27 +722,16 @@ class Pipeline:
             })
             st["hits"] += 1
             st["misses"] = 0
-            box_area = max(1, (x2 - x1) * (y2 - y1))
-            supports = []
-            for left, top, right, bottom in silhouettes:
-                overlap = max(0, min(x2, right) - max(x1, left)) * max(0, min(y2, bottom) - max(y1, top))
-                if overlap >= 0.25 * box_area:
-                    supports.append((overlap, (left, top, right, bottom)))
-            left, top, right, bottom = x1, y1, x2, y2
-            if supports:
-                _, (sx1, sy1, sx2, sy2) = max(supports)
-                left, top, right, bottom = min(x1, sx1), min(y1, sy1), max(x2, sx2), max(y2, sy2)
-            clearance = min(left, w - 1 - right)
-            fully_visible = (clearance >= edge and top >= max(1, round(h * 6 / 360))
-                             and (bottom < h - 1 or roi_end < full_side.shape[0]))
-            capturing = fully_visible and self._capture_ready(
-                det, st, side.shape, side_belt_edge=roi_end < full_side.shape[0],
+            bounds, verified, fully_visible, capturing = self._track_capture_trigger(
+                det, st, side.shape, silhouettes, side_belt_edge=roi_end < full_side.shape[0],
             )
+            left, top, right, bottom = bounds
+            clearance = min(left, w - 1 - right)
             matched_time = captured_at - self._settings.capture.pairing_side_delay_s
             samples = self._side_capture_samples.get(det.parcel_id)
             sample_interval = self._settings.capture.pairing_max_skew_s / 2
             # Cap the clearance score once there is room for padding on both sides.
-            quality = (bool(supports), min(clearance, round(w * 0.10)))
+            quality = (verified, min(clearance, round(w * 0.10)))
             sample_due = (not samples or matched_time - samples[-1]["time"] >= sample_interval
                           or quality > samples[-1]["quality"])
             if capturing or (batch_id and not st.get("paired") and fully_visible and sample_due):

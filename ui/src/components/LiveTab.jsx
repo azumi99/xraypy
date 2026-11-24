@@ -103,8 +103,8 @@ export default function LiveTab({ warehouse, frames, session, onSessionChange, o
   }, [waitingEventsAvailable, scheduleWaitingRefresh, visible]);
 
   return (
-    <div className="flex flex-wrap gap-5">
-      <div className="panel flex-[1_1_480px] min-w-0">
+    <div className="grid min-w-0 gap-5">
+      <section className="panel min-w-0" aria-label="Kamera X-ray">
         <div className="mb-4 flex flex-wrap items-center gap-2">
           <button className="btn-clay !px-4 !py-2 !text-xs" onClick={start} disabled={starting}>
             {starting ? "Menyiapkan…" : session?.running ? "Restart Session" : "Start Session"}
@@ -115,7 +115,7 @@ export default function LiveTab({ warehouse, frames, session, onSessionChange, o
           <span className="muted text-[11.5px]">mode: {session?.mode ?? "-"}</span>
         </div>
         {sessionError && <p role="alert" className="source-error mb-3">{sessionError}</p>}
-        <div className="grid gap-5 grid-cols-1">
+        <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-2">
           <VideoSection
             view="top" title="Tampak Atas" src={session?.running ? frames.top : null}
             label={session?.running ? "Menunggu sumber video Tampak Atas..." : "Mulai sesi untuk melihat video"}
@@ -127,11 +127,11 @@ export default function LiveTab({ warehouse, frames, session, onSessionChange, o
             warehouse={warehouse} sources={sources} onSaved={loadSources} sourceRef={sideSource}
           />
         </div>
-      </div>
+      </section>
 
-      <div className="panel flex-[1_1_480px] min-w-0">
+      <section className="panel min-w-0" aria-labelledby="live-queue-title">
         <div className="scan-list-heading">
-          <div><span className="awb-eyebrow">ANTREAN X-RAY</span><h3>Daftar Scan</h3></div>
+          <div><span className="awb-eyebrow">ANTREAN X-RAY</span><h3 id="live-queue-title">Daftar Scan</h3></div>
           <span className="awb-total">{waiting.length} waiting</span>
         </div>
         <p className="muted text-xs mt-2 mb-4">AWB diproses sesuai urutan antrean.</p>
@@ -150,7 +150,7 @@ export default function LiveTab({ warehouse, frames, session, onSessionChange, o
           ))}
         </ol>
         {waiting.length === 0 && <div className="scan-list-empty">Belum ada AWB dalam antrean.</div>}
-      </div>
+      </section>
     </div>
   );
 }
@@ -188,7 +188,7 @@ function VideoSection({ view, title, src, label, warehouse, sources, onSaved, so
             }}
           />
         ) : (
-          <div className="w-full h-full grid place-items-center text-muted bg-[var(--bg-cream)]">{label}</div>
+          <div className="w-full h-full grid place-items-center px-3 text-center text-sm text-muted bg-[var(--bg-cream)]">{label}</div>
         )}
       </div>
     </section>
