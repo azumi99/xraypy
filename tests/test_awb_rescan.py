@@ -133,7 +133,7 @@ async def test_qr_check_exact_match_read_only(app, store, monkeypatch):
         result = response.json()
         assert result.pop("proof_token")
         assert result == {"existing": False, "mawb": "MASTER", "hawb_number": "HOUSE",
-                                   "part": 1, "total": 3, "awb": None}
+                                   "part": 1, "total": 3, "awb": None, "source": "manifest"}
         assert [a.id for a in await store.list_awbs()] == [other.id]
         created = (await client.post("/api/awb", json={"qr_code": "HOUSE_1_3"})).json()
         publish.reset_mock()
@@ -142,7 +142,7 @@ async def test_qr_check_exact_match_read_only(app, store, monkeypatch):
         result = response.json()
         assert result.pop("proof_token")
         assert result == {"existing": True, "mawb": "MASTER", "hawb_number": "HOUSE",
-                                   "part": 1, "total": 3, "awb": created}
+                                   "part": 1, "total": 3, "awb": created, "source": "manifest"}
         assert len(await store.list_awbs()) == 2
         publish.assert_not_awaited()
         assert (await client.post("/api/awb/qr-check", json={"qr_code": "HOUSE_4_3"})).status_code == 422
@@ -251,6 +251,7 @@ async def test_label_fallback_is_unique_and_warehouse_scoped(app, store, monkeyp
                 check = await client.post("/api/awb/qr-check?warehouse=other", json={"qr_code": "HOUSE_1_3"})
                 assert check.status_code == 200 and check.json()["mawb"] == f"MASTER-{site}"
                 assert check.json()["existing"] is False
+                assert check.json()["source"] == "label"
                 created = await client.post("/api/awb?warehouse=other", json={"qr_code": "HOUSE_1_3"})
                 assert created.status_code == 200 and created.json()["awb_number"] == f"MASTER-{site}"
                 assert (await client.post("/api/awb/qr-check", json={"qr_code": "HOUSE_1_3"})).json()["existing"] is True

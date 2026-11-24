@@ -8,18 +8,21 @@ import os
 import tempfile
 import time
 import uuid
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import cv2
 import jwt
 import numpy as np
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
-from PIL import Image, UnidentifiedImageError
+from fastapi.responses import FileResponse, Response
+from PIL import Image, ImageDraw, ImageFont, UnidentifiedImageError
 from pydantic import BaseModel, Field, model_validator
 
 from ..live import live_resources
+from ..photo_delivery import deliver_photo
 from ..security import identity, require_operator
 from ..warehouse import current_warehouse
 from .manifest import fetch_manifest, mawb_candidates
@@ -131,7 +134,7 @@ async def _resolve_qr(body: AwbBody, request: Request):
     mawb = mawbs[0].strip()
     if not mawb:
         raise HTTPException(422, f"HAWB {body.hawb_number!r} has no usable MAWB in this warehouse's {source}")
-    return mawb, await _find_qr_match(body, request, mawb)
+    return mawb, await _find_qr_match(body, request, mawb), source
 
 
 async def _find_qr_match(body: AwbBody, request: Request, mawb: str):
@@ -150,14 +153,14 @@ async def check_qr(body: QrCheckBody, request: Request, _: None = Depends(requir
     if not user or not user.get("email"):
         raise HTTPException(401, "authentication required")
     parsed = AwbBody(qr_code=body.qr_code)
-    mawb, match = await _resolve_qr(parsed, request)
+    mawb, match, source = await _resolve_qr(parsed, request)
     now = int(time.time())
     proof = jwt.encode({"purpose": "awb-qr-proof", "sub": user["email"],
                         "warehouse": current_warehouse(), "qr": parsed.qr_code,
                         "mawb": mawb, "iat": now, "exp": now + 300},
                        request.app.state.settings.jwt_secret, algorithm="HS256")
     return {"existing": match is not None, "mawb": mawb, "hawb_number": parsed.hawb_number,
-            "part": parsed.part, "total": parsed.total, "proof_token": proof,
+            "part": parsed.part, "total": parsed.total, "proof_token": proof, "source": source,
             "awb": await _dump_detail(request, match) if match else None}
 
 
@@ -186,7 +189,7 @@ async def insert_awb(body: AwbBody, request: Request, _: None = Depends(require_
                     raise HTTPException(422, "QR proof invalid or expired; run qr-check again and retry") from None
                 match = await _find_qr_match(body, request, mawb)
             else:
-                mawb, match = await _resolve_qr(body, request)
+                mawb, match, _ = await _resolve_qr(body, request)
             if match:
                 out = await _dump_detail(request, match)
                 out["existing"] = True
@@ -217,6 +220,81 @@ async def get_awb(awb_id: int, request: Request, _: None = Depends(require_opera
     if target.parcel_id:
         out["audit"] = await request.app.state.store.list_audit(target.parcel_id)
     return out
+
+
+def _render_xray_frame(source: Path | bytes, detail: dict[str, Any], view: str) -> bytes:
+    with Image.open(source if isinstance(source, Path) else BytesIO(source)) as original:
+        if original.width * original.height > 20_000_000:
+            raise ValueError("Photo is too large")
+        photo = original.convert("RGB")
+    width = max(640, photo.width)
+    height = round(photo.height * width / photo.width)
+    if width * height > 20_000_000:
+        raise ValueError("Photo is too large")
+    scale = width / max(320, photo.width)
+    bar, header = round(14 * scale), round(33 * scale)
+    line = max(1, round(2 * scale))
+    pad = round(8 * scale)
+    font_dir = Path(__file__).resolve().parents[1] / "assets/poppins"
+    font_size = max(6, round(6 * scale))
+    regular = ImageFont.truetype(str(font_dir / "Poppins-Regular.ttf"), font_size)
+    bold = ImageFont.truetype(str(font_dir / "Poppins-Bold.ttf"), font_size)
+    canvas = Image.new("RGB", (width, height + header), "#f8fafb")
+    draw = ImageDraw.Draw(canvas)
+    draw.rectangle((0, 0, width - 1, bar - 1), fill="#152630")
+    draw.rectangle((0, header - line, width - 1, header - 1), fill="#d8ab51")
+
+    def fit(text: str, limit: int, font: ImageFont.FreeTypeFont) -> str:
+        if draw.textlength(text, font=font) <= limit:
+            return text
+        while text and draw.textlength(text + "…", font=font) > limit:
+            text = text[:-1]
+        return text + "…"
+
+    caption = "Tampak Samping" if view == "side" else "Tampak Atas"
+    captured = detail["parcel"].get("created_at")
+    if captured:
+        timestamp = datetime.fromisoformat(captured).astimezone(timezone(timedelta(hours=7)))
+        caption += timestamp.strftime(" · %d/%m/%Y %H:%M WIB")
+    draw.text((pad, bar // 2), "Xray Cargo", fill="#f2f6fa", font=bold, anchor="lm")
+    draw.text((width - pad, bar // 2), fit(caption, width - round(74 * scale), regular),
+              fill="#f2cb79", font=regular, anchor="rm")
+    fields = (
+        ("HAWB", detail.get("hawb_number") or "—"),
+        ("MAWB", detail.get("awb_number") or "—"),
+        ("Part", f"{detail.get('part') or '—'} / {detail.get('total') or '—'}"),
+    )
+    column = width // len(fields)
+    for index, (label, value) in enumerate(fields):
+        left = index * column
+        if index:
+            draw.line((left, bar, left, header - line - 1), fill="#cbd4da")
+        draw.text((left + pad, bar + round(5 * scale)), label, fill="#34434c", font=regular, anchor="lm")
+        draw.text((left + pad, bar + round(13 * scale)), fit(value, column - 2 * pad, bold),
+                  fill="#152630", font=bold, anchor="lm")
+    canvas.paste(photo.resize((width, height), Image.Resampling.LANCZOS), (0, header))
+    out = BytesIO()
+    canvas.save(out, format="PNG")
+    return out.getvalue()
+
+
+@router.get("/{awb_id}/xray-preview/{view}")
+async def get_xray_preview(
+    awb_id: int, view: Literal["top", "side"], request: Request, _: None = Depends(require_operator),
+) -> Response:
+    """Render a light, shareable X-ray preview for an AWB in the current warehouse."""
+    detail = await get_awb(awb_id, request)
+    reference = (detail.get("parcel") or {}).get("crop_ref_side" if view == "side" else "crop_ref")
+    if not reference:
+        raise HTTPException(404, "Photo not found")
+    photo = await deliver_photo(request, reference)
+    source = Path(photo.path) if isinstance(photo, FileResponse) else photo.body
+    try:
+        data = await asyncio.to_thread(_render_xray_frame, source, detail, view)
+    except (OSError, ValueError, Image.DecompressionBombError):
+        raise HTTPException(503, "Preview unavailable") from None
+    return Response(data, media_type="image/png",
+                    headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
 
 
 @router.post("/{awb_id}/label-photo")

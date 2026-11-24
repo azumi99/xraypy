@@ -5,105 +5,19 @@ import { photoPath, photoRefs, photoSyncLabel, photoSyncPaths } from "../photoSy
 
 const photoUrl = (ref) => `/api/sync/photo?ref=${encodeURIComponent(ref)}`;
 
-function PhotoImage({ reference, alt, frame }) {
-  const local = photoPath(reference);
-  const remote = photoUrl(reference);
-  const [src, setSrc] = useState(local);
-  const [failed, setFailed] = useState(false);
-  const [openError, setOpenError] = useState("");
+function PhotoImage({ reference, alt, previewUrl }) {
+  const sources = [...new Set([photoUrl(reference), photoPath(reference), previewUrl].filter(Boolean))];
+  const [sourceIndex, setSourceIndex] = useState(0);
+  const src = sources[sourceIndex];
 
-  async function openFramedImage(event) {
-    event.preventDefault();
-    setOpenError("");
-    const image = event.currentTarget.querySelector("img");
-    if (!image.complete || !image.naturalWidth) {
-      setOpenError("Tunggu hingga gambar selesai dimuat.");
-      return;
-    }
-    const preview = window.open("", "_blank");
-    if (!preview) {
-      setOpenError("Izinkan pop-up untuk membuka gambar.");
-      return;
-    }
-    preview.opener = null;
-    try {
-      const fonts = await document.fonts.load("700 12px Poppins");
-      if (preview.closed) return;
-      if (!fonts.length) throw new Error("Poppins unavailable");
-      const canvas = document.createElement("canvas");
-      const width = Math.max(640, image.naturalWidth);
-      const imageHeight = Math.round(image.naturalHeight * width / image.naturalWidth);
-      const scale = width / Math.max(320, image.naturalWidth);
-      const titleHeight = 14;
-      const textPadding = 8;
-      const header = Math.ceil(33 * scale);
-      canvas.width = width;
-      canvas.height = header + imageHeight;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) throw new Error("Canvas unavailable");
-      ctx.save();
-      ctx.scale(scale, scale);
-      const frameWidth = width / scale;
-      ctx.fillStyle = "#152630";
-      ctx.fillRect(0, 0, frameWidth, titleHeight);
-      ctx.textBaseline = "middle";
-      ctx.font = "700 6px Poppins";
-      ctx.fillStyle = "#f2f6fa";
-      ctx.fillText("Xray Cargo", textPadding, titleHeight / 2);
-      ctx.textAlign = "right";
-      ctx.fillStyle = "#f2cb79";
-      ctx.fillText(frame.caption, frameWidth - textPadding, titleHeight / 2, frameWidth - 74);
-      ctx.textAlign = "left";
-      ctx.fillStyle = "#f8fafb";
-      ctx.fillRect(0, titleHeight, frameWidth, header / scale - titleHeight);
-      ctx.fillStyle = "#d8ab51";
-      ctx.fillRect(0, header / scale - 2, frameWidth, 2);
-      const column = frameWidth / frame.fields.length;
-      frame.fields.forEach(([label, value], index) => {
-        const left = index * column;
-        if (index) {
-          ctx.fillStyle = "#cbd4da";
-          ctx.fillRect(left, titleHeight, 1, header / scale - titleHeight - 2);
-        }
-        ctx.fillStyle = "#34434c";
-        ctx.fillText(label, left + textPadding, titleHeight + 5, column - 2 * textPadding);
-        ctx.fillStyle = "#152630";
-        ctx.fillText(value, left + textPadding, titleHeight + 13, column - 2 * textPadding);
-      });
-      ctx.restore();
-      ctx.drawImage(image, 0, header, width, imageHeight);
-      canvas.toBlob((blob) => {
-        if (preview.closed) return;
-        if (!blob) {
-          preview.close();
-          setOpenError("Gambar dengan bingkai tidak dapat dibuat.");
-          return;
-        }
-        const url = URL.createObjectURL(blob);
-        preview.location.replace(url);
-        // Keep the URL available while the image tab is open.
-        const timer = window.setInterval(() => {
-          if (preview.closed) {
-            URL.revokeObjectURL(url);
-            window.clearInterval(timer);
-          }
-        }, 5000);
-      }, "image/png");
-    } catch (error) {
-      preview.close();
-      setOpenError(error.message === "Poppins unavailable"
-        ? "Font Poppins tidak dapat dimuat. Coba lagi."
-        : "Gambar dengan bingkai tidak dapat dibuat.");
-    }
-  }
-
-  if (failed) return <div className="awb-scan-empty" role="status">Foto tidak dapat dimuat</div>;
-  const image = <img src={src} alt={alt} title="Lihat ukuran penuh"
-    onError={() => { if (src !== remote) setSrc(remote); else setFailed(true); }} />;
-  return frame ? <>
-    <button type="button" className="awb-scan-image" onClick={openFramedImage}>{image}</button>
-    {openError && <p role="alert" className="text-bad text-xs p-2">{openError}</p>}
-  </> : <a className="awb-scan-image" href={src} target="_blank" rel="noreferrer">{image}</a>;
+  if (!src) return <div className="awb-scan-empty" role="status">Foto tidak dapat dimuat</div>;
+  return (
+    <a className="awb-scan-image" href={previewUrl ?? src} target="_blank" rel="noopener noreferrer">
+      <img src={src} alt={alt} title="Lihat ukuran penuh"
+        data-framed={src === previewUrl ? "true" : undefined}
+        onError={() => setSourceIndex(sourceIndex + 1)} />
+    </a>
+  );
 }
 
 function XrayFrame({ item, parcel, reference, view }) {
@@ -129,7 +43,7 @@ function XrayFrame({ item, parcel, reference, view }) {
           {fields.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}
         </dl>
       </figcaption>
-      <PhotoImage key={reference} reference={reference} frame={{ caption, fields }}
+      <PhotoImage key={reference} reference={reference} previewUrl={`/api/awb/${item.id}/xray-preview/${view}`}
         alt={`X-ray ${side ? "tampak samping" : "tampak atas"} ${item.hawb_number ?? item.id}`} />
     </figure>
   );

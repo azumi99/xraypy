@@ -187,7 +187,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     path.startswith("/crops/")
                     or path in {"/api/awb", "/api/session/state", "/api/session/batches",
                                 "/api/sync/status", "/api/sync/photo"}
-                    or re.fullmatch(r"/api/awb/[0-9]+(?:/manifest)?", path)
+                    or re.fullmatch(r"/api/awb/[0-9]+(?:/manifest|/xray-preview/(?:top|side))?", path)
                 )
                 if not auth_path and not read_only:
                     return JSONResponse({"detail": "forbidden"}, status_code=403)
