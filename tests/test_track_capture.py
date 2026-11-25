@@ -733,3 +733,33 @@ async def test_last_parcel_can_stop_before_normal_capture_margin(view):
     else:
         candidate, = pipeline._pending_side
         assert np.count_nonzero(candidate["side"][:, :, 0] == 90) == 180 * 80
+
+
+@pytest.mark.parametrize("view", ["top", "side"])
+async def test_last_parcel_stable_before_padding_margin_without_silhouette(view):
+    pipeline = Pipeline(Settings(_env_file=None), MagicMock(), MagicMock(), MagicMock())
+    pipeline.session.batch_id = "batch"
+    pipeline._capture_with_effect = AsyncMock()
+    frame = np.zeros((480, 720, 3), np.uint8)
+    boxes = iter([
+        (0, 80, 179, 159), (2, 80, 181, 159),
+        (16, 80, 195, 159), (16, 80, 195, 159), (16, 80, 195, 159), (16, 80, 195, 159),
+    ])
+    detector = "_detector" if view == "top" else "_side_detector"
+    setattr(pipeline, detector, SimpleNamespace(process=lambda _: [
+        SimpleNamespace(parcel_id=1, bbox=next(boxes), conf=0.9),
+    ]))
+
+    for _ in range(4):
+        await pipeline._process_track_frame({view: frame})
+        assert not pipeline._pending_top and not pipeline._pending_side
+    for _ in range(2):
+        await pipeline._process_track_frame({view: frame})
+
+    if view == "top":
+        await asyncio.sleep(0)
+        pipeline._capture_with_effect.assert_awaited_once()
+        assert len(pipeline._pending_top) == 1
+    else:
+        candidate, = pipeline._pending_side
+        assert candidate["track_id"] == 1

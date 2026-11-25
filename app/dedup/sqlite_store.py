@@ -312,7 +312,7 @@ class SqliteStore(IdentityStore):
     async def list_labels(self):
         def run():
             with self._lock:
-                return [dict(row) for row in self._connect().execute("SELECT * FROM label_print ORDER BY id")]
+                return [dict(row) for row in self._connect().execute("SELECT * FROM label_print ORDER BY created_at DESC, id DESC")]
         return await asyncio.to_thread(run)
 
     async def label_mawbs(self, hawb_number: str) -> list[str]:

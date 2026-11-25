@@ -72,24 +72,30 @@ def _lookup(warehouse, mawb, hawb):
     try:
         with conn.cursor() as cursor:
             if warehouse == "cas":
-                # BINARY mematikan indeks NO_MASTER_BL_AWB/NO_HOST_BL_AWB (1.6 jt baris)
-                # sehingga query full-scan sampai timeout; indeks sudah case-insensitive
-                # (utf8 collation), pencocokan tanpa BINARY tetap tepat untuk data ini.
-                cursor.execute(
-                    "SELECT " + ", ".join(f"`{column}`" for column in CAS_FIELDS) + " "
+                # Pencocokan tanpa BINARY mempertahankan penggunaan indeks CAS.
+                fields = CAS_FIELDS
+                source = (
                     "FROM `tpsonline_cas`.`nvocc_detil` "
-                    "WHERE `NO_MASTER_BL_AWB` = %s AND `no_host_bl_awb` = %s LIMIT 1",
-                    (mawb, hawb),
+                    "WHERE `NO_MASTER_BL_AWB` = %s AND `no_host_bl_awb` = %s LIMIT 1"
                 )
-                row = cursor.fetchone()
-                return {name: row[column] for column, name in CAS_FIELDS.items()} if row else None
-            cursor.execute(
-                "SELECT " + ", ".join(f"`{column}`" for column in FIELDS)
-                + " FROM imp_hostawb WHERE BINARY MasterAWB = BINARY %s AND BINARY HostAWB = BINARY %s"
-                + " ORDER BY noid DESC LIMIT 1", (mawb, hawb),
-            )
+            else:
+                fields = FIELDS
+                source = (
+                    "FROM imp_hostawb WHERE BINARY MasterAWB = BINARY %s AND BINARY HostAWB = BINARY %s"
+                    " ORDER BY noid DESC LIMIT 1"
+                )
+            columns = ", ".join(f"`{column}`" for column in fields)
+            try:
+                cursor.execute(f"SELECT {columns}, `created_at` {source}", (mawb, hawb))
+            except Exception as exc:
+                # Older manifest schemas can omit created_at.
+                if not exc.args or exc.args[0] != 1054 or "created_at" not in str(exc):
+                    raise
+                cursor.execute(f"SELECT {columns} {source}", (mawb, hawb))
             row = cursor.fetchone()
-            return {name: row[column] for column, name in FIELDS.items()} if row else None
+            if not row:
+                return None
+            return {**{name: row[column] for column, name in fields.items()}, "created_at": row.get("created_at")}
     finally:
         conn.close()
 

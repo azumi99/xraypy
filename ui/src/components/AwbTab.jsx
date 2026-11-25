@@ -9,7 +9,7 @@ import { groupManifestRequests } from "../manifestRequests";
 const PAGE_SIZES = [10, 25, 50];
 const EMPTY_FILTERS = { mawb: "", hawb: "", airlines: "", flight: "", from: "", to: "" };
 
-export default function AwbTab({ onChanged, onOpenDetail, onEvent, connected, readOnly = false }) {
+export default function AwbTab({ onChanged, onOpenDetail, onEvent, connected, warehouse, readOnly = false }) {
   const [items, setItems] = useState([]);
   const [error, setError] = useState(null);
   const grouped = useAwbDisplayStore((s) => s.grouped);
@@ -120,12 +120,9 @@ export default function AwbTab({ onChanged, onOpenDetail, onEvent, connected, re
   return (
     <div className="data-workspace grid min-w-0 grid-cols-[minmax(0,1fr)] gap-3 w-full">
       <section className="panel awb-display-mode">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <h3>Display Mode</h3>
-          <div className="flex flex-wrap gap-2" aria-label="Display Mode">
+        <div className="flex flex-wrap gap-2" role="group" aria-label="Display Mode">
             <button type="button" className={grouped ? "btn-clay" : "btn-ghost"} aria-pressed={grouped} onClick={() => { setGrouped(true); setPage(1); }}>Grouping</button>
             <button type="button" className={!grouped ? "btn-clay" : "btn-ghost"} aria-pressed={!grouped} onClick={() => { setGrouped(false); setPage(1); }}>Non-Grouping</button>
-          </div>
         </div>
         <form onSubmit={(e) => {
           e.preventDefault();
@@ -161,9 +158,6 @@ export default function AwbTab({ onChanged, onOpenDetail, onEvent, connected, re
         </form>
       </section>
     <div className="panel awb-table-panel w-full">
-      <div className="awb-section-heading">
-        <h3>Daftar AWB</h3>
-      </div>
       {error && <p role="alert" className="text-bad text-[11.5px] my-2">{error} <button className="manifest-retry" onClick={load}>Coba lagi</button></p>}
 
       {/* DataTables top bar: length menu kiri, search kanan */}
@@ -183,8 +177,8 @@ export default function AwbTab({ onChanged, onOpenDetail, onEvent, connected, re
       <div className="awb-table-scroll" tabIndex={0} role="region" aria-label="Tabel AWB, dapat digeser horizontal">
       <table className="awb-data-table w-full">
         <thead>
-          {grouped ? <tr><th>#</th><th>MAWB</th><th>HAWB</th><th>Nomor AJU</th><th>Airlines</th><th>Origin</th><th>Pieces</th><th>Status</th></tr> :
-          <tr><th>#</th><th>MAWB</th><th>HAWB</th><th>Nomor AJU</th><th>Pieces</th><th>Airlines</th><th>Origin</th><th>Status</th><th>Date Time (WIB)</th>{!readOnly && <th>Aksi</th>}</tr>}
+          {grouped ? <tr><th>#</th><th>MAWB</th><th>HAWB</th><th>Nomor AJU</th><th>Airlines</th><th>Origin</th><th>Destination</th><th>Pieces</th><th>Status</th></tr> :
+          <tr><th>#</th><th>MAWB</th><th>HAWB</th><th>Nomor AJU</th><th>Pieces</th><th>Airlines</th><th>Origin</th><th>Destination</th><th>Status</th><th>Date Time (WIB)</th>{!readOnly && <th>Aksi</th>}</tr>}
         </thead>
         <tbody>
           {grouped ? pageItems.map((group, i) => <tr key={group.items[0].id} className="cursor-pointer" onClick={() => onOpenDetail?.(group.items[0].id)}>
@@ -196,6 +190,7 @@ export default function AwbTab({ onChanged, onOpenDetail, onEvent, connected, re
             <td>{group.hawbGroups[0].nomorAju.join(", ") || "—"}</td>
             <td title={group.airlines === null ? "Manifest tidak tersedia" : undefined}>{group.airlines ?? "…"}</td>
             <td title={group.origin === null ? "Manifest tidak tersedia" : undefined}>{group.origin ?? "…"}</td>
+            <td>{warehouse === "bgd" ? "IDCGK" : group.destination || "—"}</td>
             <td>{group.scanned} / {group.status === "LOADING" ? "…" : group.expected ?? "tidak tersedia"}</td>
             <td><span className={`awb-status ${group.status === "COMPLETE" ? "text-ok" : group.status === "INCOMPLETE" ? "st-incomplete" : group.status === "OVER EXPECTED" ? "text-bad" : "st-waiting"}`}>{group.status}</span></td>
           </tr>) : pageItems.map((a, i) => {
@@ -210,6 +205,7 @@ export default function AwbTab({ onChanged, onOpenDetail, onEvent, connected, re
                 <td>{a.part != null ? `${a.part} / ${a.total ?? "—"}` : "—"}</td>
                 <td title={manifests[a.id]?.status === "unavailable" ? "Manifest tidak tersedia" : undefined}>{manifests[a.id] ? (manifests[a.id].data?.airlines_code ?? "—") : "…"}</td>
                 <td title={manifests[a.id]?.status === "unavailable" ? "Manifest tidak tersedia" : undefined}>{manifests[a.id] ? (manifests[a.id].data?.origin ?? "—") : "…"}</td>
+                <td>{warehouse === "bgd" ? "IDCGK" : manifests[a.id] ? manifests[a.id].data?.destination || "—" : "…"}</td>
                 <td><span className={`awb-status ${statusColor[a.status] ?? ""}`}>{a.status === "PAIRED" ? "COMPLETE" : a.status}</span></td>
                 <td>{a.created_at && !Number.isNaN(new Date(a.created_at).getTime()) ? new Date(a.created_at).toLocaleString("id-ID", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Jakarta" }) : "—"}</td>
                 {!readOnly && <td>
@@ -226,7 +222,7 @@ export default function AwbTab({ onChanged, onOpenDetail, onEvent, connected, re
             );
           })}
           {filtered.length === 0 && (
-            <tr><td colSpan={grouped ? 8 : readOnly ? 9 : 10} className="muted text-center !py-10">Tidak ada data AWB yang cocok.</td></tr>
+            <tr><td colSpan={grouped ? 9 : readOnly ? 10 : 11} className="muted text-center !py-10">Tidak ada data AWB yang cocok.</td></tr>
           )}
         </tbody>
       </table>

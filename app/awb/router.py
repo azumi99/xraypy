@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import csv
 import logging
 import os
 import tempfile
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
-from io import BytesIO
+from io import BytesIO, StringIO
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 import cv2
 import jwt
@@ -206,6 +207,59 @@ async def list_waiting(request: Request, _: None = Depends(require_operator)) ->
     service = request.app.state.awb
     items = await service.waiting()
     return await _dump_list(request, items)
+
+
+MatrixText = Annotated[str, Field(max_length=1024)]
+MATRIX_EXPORT_COLUMNS = (
+    "MAWB", "HAWB", "Pieces", "Waktu dibuat di manifest (WIB)",
+    "Waktu foto X-ray terakhir (WIB)", "Waktu kirim CEISA (WIB)",
+)
+
+
+class MatrixExportRow(BaseModel):
+    mawb: MatrixText
+    hawb: MatrixText
+    pieces: int | None
+    manifest_at: MatrixText
+    xray_at: MatrixText
+
+
+class MatrixExportBody(BaseModel):
+    format: Literal["csv", "xlsx"]
+    rows: list[MatrixExportRow] = Field(max_length=20000)
+
+
+@router.post("/matrix/export")
+def export_matrix(body: MatrixExportBody, _: None = Depends(require_operator)) -> Response:
+    rows = [MATRIX_EXPORT_COLUMNS, *(
+        (row.mawb, row.hawb, row.pieces, row.manifest_at, row.xray_at, "") for row in body.rows
+    )]
+    headers = {"Content-Disposition": f'attachment; filename="matrix.{body.format}"', "Cache-Control": "no-store"}
+    if body.format == "csv":
+        output = StringIO(newline="")
+        writer = csv.writer(output)
+        for row in rows:
+            writer.writerow([
+                "'" + value if isinstance(value, str) and value.lstrip().startswith(("=", "+", "-", "@"))
+                else value for value in row
+            ])
+        return Response(output.getvalue().encode("utf-8-sig"), media_type="text/csv", headers=headers)
+
+    from openpyxl import Workbook
+    from openpyxl.cell import WriteOnlyCell
+
+    workbook = Workbook(write_only=True)
+    sheet = workbook.create_sheet("Matrix")
+    for row in rows:
+        cells = [WriteOnlyCell(sheet, value=value) for value in row]
+        for cell, value in zip(cells, row):
+            if isinstance(value, str):
+                cell.data_type = "s"
+        sheet.append(cells)
+    output = BytesIO()
+    workbook.save(output)
+    return Response(output.getvalue(),
+                    media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers=headers)
 
 
 @router.get("/{awb_id}")

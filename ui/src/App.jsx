@@ -3,7 +3,8 @@ import api from "./api";
 import { useStream } from "./hooks/useStream";
 import LiveTab from "./components/LiveTab";
 import AwbTab from "./components/AwbTab";
-import { BoxIcon, PrinterIcon, SettingsIcon, TagIcon, VideoIcon } from "./icons";
+import MatrixTab from "./components/MatrixTab";
+import { BoxIcon, PrinterIcon, SettingsIcon, TableIcon, TagIcon, VideoIcon } from "./icons";
 import AwbDetailPage from "./components/AwbDetailPage";
 import LabelsTab from "./components/LabelsTab";
 import { warehousePath } from "./routes";
@@ -14,11 +15,12 @@ const TABS = [
   { path: "/dashboard", label: "Dashboard", icon: <BoxIcon /> },
   { path: "/live", label: "Xray", icon: <VideoIcon /> },
   { path: "/awb", label: "Queue AWB", icon: <TagIcon /> },
+  { path: "/matrix", label: "Matrix", icon: <TableIcon /> },
   { path: "/labels", label: "Print Label", icon: <PrinterIcon /> },
   { path: "/settings", label: "Setting", icon: <SettingsIcon /> },
 ];
 
-const PAGE_TITLES = { "/dashboard": "Dashboard", "/live": "Xray", "/awb": "Queue AWB", "/labels": "Print Label", "/settings": "Setting" };
+const PAGE_TITLES = { "/dashboard": "Dashboard", "/live": "Xray", "/awb": "Queue AWB", "/matrix": "Matrix", "/labels": "Print Label", "/settings": "Setting" };
 
 /** Router ringan berbasis History API — URL ikut berubah ke /namahalaman. */
 export function usePathRoute() {
@@ -312,8 +314,9 @@ function AuthenticatedApp({ user, onLogout, logoutError, logoutPending }) {
               connected={connected} waitingEventsAvailable={waitingEventsAvailable} />
           </div>}
           {activePath === "/awb" && !awbDetailId && (
-            <AwbTab readOnly={readOnly} onChanged={refreshSession} onOpenDetail={(id) => navigate(`/awb/${id}`)} onEvent={onEvent} connected={connected} />
+            <AwbTab warehouse={user.access} readOnly={readOnly} onChanged={refreshSession} onOpenDetail={(id) => navigate(`/awb/${id}`)} onEvent={onEvent} connected={connected} />
           )}
+          {activePath === "/matrix" && <MatrixTab key={user.access} onEvent={onEvent} connected={connected} />}
           {activePath === "/labels" && <LabelsTab />}
           {activePath === "/settings" && <SettingsTab warehouse={user.access} />}
           {awbDetailId && (

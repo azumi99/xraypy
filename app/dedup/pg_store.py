@@ -104,7 +104,7 @@ class PgVectorStore(IdentityStore):
         return rows[0] if rows else None
 
     async def list_labels(self):
-        return [dict(row) for row in await self._run("SELECT * FROM cv.label_print ORDER BY id")]
+        return [dict(row) for row in await self._run("SELECT * FROM cv.label_print ORDER BY created_at DESC, id DESC")]
 
     async def photo_reference_exists(self, ref: str) -> bool:
         row = await self._runrow(

@@ -38,12 +38,14 @@ export function groupAwbs(items, manifests, { byHawb = false } = {}) {
       }
     }
     const scanned = group.items.filter((item) => item.status === "PAIRED").length;
-    const airlineSet = new Set(), originSet = new Set();
+    const airlineSet = new Set(), originSet = new Set(), destinationSet = new Set();
     let airlinesUnknown = false, originUnknown = false;
     for (const item of group.items) {
       const manifest = manifests[item.id];
       const airline = manifest?.status === "found" ? String(manifest.data?.airlines_code ?? "").trim() : "";
       const origin = manifest?.status === "found" ? String(manifest.data?.origin ?? "").trim() : "";
+      const destination = manifest?.status === "found" ? String(manifest.data?.destination ?? "").trim() : "";
+      if (destination) destinationSet.add(destination);
       if (airline) airlineSet.add(airline); else airlinesUnknown = true;
       if (origin) originSet.add(origin); else originUnknown = true;
     }
@@ -59,6 +61,6 @@ export function groupAwbs(items, manifests, { byHawb = false } = {}) {
       expected: detail.incompleteManifest ? null : quantities.get(detail.hawb) ?? null,
       nomorAju: [...detail.nomorAju].sort(),
     }));
-    return { ...group, scanned, expected, status, airlines, origin, hawbGroups };
+    return { ...group, scanned, expected, status, airlines, origin, destination: [...destinationSet].sort().join(", "), hawbGroups };
   });
 }

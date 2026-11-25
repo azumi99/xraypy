@@ -39,7 +39,7 @@ async def test_labels_api(store, settings):
         response = await client.post("/api/labels/import", headers=headers, files={"file": ("labels.xlsx", workbook_bytes(3, "SIN-HKG"))})
         assert response.json() == {"imported": 1, "updated": 2, "skipped": 2}
         labels = (await client.get("/api/labels", headers=headers)).json()
-        assert [item["part"] for item in labels] == [1, 2, 3]
+        assert [item["part"] for item in labels] == [3, 2, 1]
         assert all(item["route"] == "SIN-HKG" and item["flight_no"] == "FX1" for item in labels)
         assert (await client.post("/api/labels/delete-many", headers=headers, json={"ids": [labels[0]["id"], 99999]})).json() == {"deleted": 1}
         assert len((await client.get("/api/labels", headers=headers)).json()) == 2

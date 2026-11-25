@@ -600,8 +600,24 @@ class Pipeline:
                    and (bottom < h - 1 or side_belt_edge))
         # A verified silhouette permits capture before the usual crop margin.
         early = verified and state["hits"] >= 2 and state["entered"] and left > state["entry_x"]
+        # A stopped parcel can stay inside the safe frame but short of the crop margin.
+        # Without a silhouette, require a prior observation at the left edge.
+        if left < edge:
+            state["seen_at_left_edge"] = True
+        stable = False
+        if visible and state["entered"] and not state["captured"] and (
+            verified or state.get("seen_at_left_edge")
+        ):
+            anchor, count = state.get("stable_view", (bounds, 0))
+            tolerance = max(1, round(w * 2 / 640))
+            if max(abs(old - new) for old, new in zip(anchor, bounds)) > tolerance:
+                anchor, count = bounds, 0
+            state["stable_view"] = (anchor, count + 1)
+            stable = count >= 2
+        else:
+            state.pop("stable_view", None)
         ready = visible and not state["captured"] and (
-            early or self._capture_ready(det, state, shape, side_belt_edge=side_belt_edge)
+            early or stable or self._capture_ready(det, state, shape, side_belt_edge=side_belt_edge)
         )
         return bounds, verified, visible, ready
 
@@ -643,6 +659,9 @@ class Pipeline:
         for det in parcels:
             seen.add(det.parcel_id)
             if not getattr(det, "observed", True):
+                state = self._track_states.get(det.parcel_id)
+                if state is not None:
+                    state.pop("stable_view", None)
                 continue
             st = self._track_states.setdefault(
                 det.parcel_id, {"hits": 0, "captured": False, "capturing": False, "entered": False, "entry_x": None, "misses": 0}
@@ -675,6 +694,7 @@ class Pipeline:
             self.overlays[det.parcel_id].capturing = st["capturing"]
         for tid in list(self._track_states):
             if tid not in seen:
+                self._track_states[tid].pop("stable_view", None)
                 self._track_states[tid]["misses"] += 1
                 if self._track_states[tid]["misses"] > 15:
                     del self._track_states[tid]
@@ -752,6 +772,7 @@ class Pipeline:
             overlays.append(ParcelOverlay(det.parcel_id, x1, x2, y1=y1, y2=y2, conf=det.conf, capturing=capturing))
         for tid in list(self._side_track_states):
             if tid not in seen:
+                self._side_track_states[tid].pop("stable_view", None)
                 self._side_track_states[tid]["misses"] += 1
                 if self._side_track_states[tid]["misses"] > 15:
                     del self._side_track_states[tid]

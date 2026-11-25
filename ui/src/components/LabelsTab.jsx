@@ -1,11 +1,29 @@
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import SuccessToast from "./SuccessToast";
 import JsBarcode from "jsbarcode";
 import QRCode from "qrcode";
 import api, { post } from "../api";
+import ExpandRowButton from "./ExpandRowButton";
 
 const emptyFilters = { mawb: "", hawb: "", airlines_name: "", flight_no: "" };
 const groupKey = (row) => JSON.stringify([row.mawb, row.hawb]);
 const escapeHtml = (value) => String(value ?? "-").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+
+const createdAtFormatter = new Intl.DateTimeFormat("id-ID", {
+  dateStyle: "medium", timeStyle: "medium", timeZone: "Asia/Jakarta",
+});
+
+function createdAtTimestamp(value) {
+  if (!value) return NaN;
+  const datetime = value.replace(" ", "T");
+  // SQLite CURRENT_TIMESTAMP is UTC and has no offset.
+  return Date.parse(/(?:Z|[+-]\d{2}:?\d{2})$/i.test(datetime) ? datetime : `${datetime}Z`);
+}
+
+function formatCreatedAt(value) {
+  const timestamp = createdAtTimestamp(value);
+  return Number.isFinite(timestamp) ? createdAtFormatter.format(timestamp) : "—";
+}
 
 async function printLabels(rows, parts, setError) {
   if (!rows.length) return;
@@ -50,6 +68,7 @@ export default function LabelsTab() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const [importNotice, setImportNotice] = useState(null);
   const [filters, setFilters] = useState(emptyFilters);
   const [applied, setApplied] = useState(emptyFilters);
   const [grouped, setGrouped] = useState(true);
@@ -64,7 +83,14 @@ export default function LabelsTab() {
       const data = await api("/labels");
       const items = Array.isArray(data) ? data : data?.items;
       if (!Array.isArray(items)) throw new Error("Invalid labels response");
-      setRows(items);
+      const sorted = [...items].sort((a, b) => {
+        const aTime = createdAtTimestamp(a.created_at);
+        const bTime = createdAtTimestamp(b.created_at);
+        const aOrder = Number.isFinite(aTime) ? aTime : -Infinity;
+        const bOrder = Number.isFinite(bTime) ? bTime : -Infinity;
+        return bOrder - aOrder || b.id - a.id;
+      });
+      setRows(sorted);
       setSelected((old) => new Set(items.filter((row) => old.has(row.id)).map((row) => row.id)));
       setError("");
       return true;
@@ -72,6 +98,7 @@ export default function LabelsTab() {
     finally { setLoading(false); }
   };
   useEffect(() => { void load(); }, []);
+  const closeImportNotice = useCallback(() => setImportNotice(null), []);
 
   const allGroups = new Map();
   for (const row of rows) {
@@ -106,16 +133,18 @@ export default function LabelsTab() {
     finally { setBusy(false); }
   };
   const upload = async (file) => {
+    setImportNotice(null);
     setBusy(true); setError(""); setMessage("");
     try {
       const body = new FormData(); body.append("file", file);
       const result = await api("/labels/import", { method: "POST", body });
-      if (await load()) setMessage(`Import complete: ${result.imported ?? 0} imported, ${result.updated ?? 0} updated, ${result.skipped ?? 0} skipped.`);
+      setImportNotice(result);
+      await load();
     } catch (e) { setError(`Import failed: ${e.message}`); }
     finally { setBusy(false); }
   };
   const selectedRows = rows.filter((row) => selected.has(row.id));
-  const rowCells = (row) => <><td>{parts.get(row.id)}</td><td>{row.mawb}</td><td>{row.pcs_mawb ?? "-"}</td><td>{row.hawb}</td><td>{row.pcs_hawb ?? "-"}</td><td>{row.airlines_name ?? "-"}</td><td>{row.flight_no ?? "-"}</td><td>{row.route ?? "-"}</td></>;
+  const rowCells = (row) => <><td>{parts.get(row.id)}</td><td>{row.mawb}</td><td>{row.pcs_mawb ?? "-"}</td><td>{row.hawb}</td><td>{row.pcs_hawb ?? "-"}</td><td>{row.airlines_name ?? "-"}</td><td>{row.flight_no ?? "-"}</td><td>{row.route ?? "-"}</td><td className="whitespace-nowrap">{formatCreatedAt(row.created_at)}</td></>;
   const actions = (items) => <div className="label-actions">
     <button className="label-action label-action-print" onClick={() => print(items)}>
       <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M6 9V3h12v6M6 18H4V9h16v9h-2M6 14h12v7H6z" /><path d="M17 11h1" /></svg>Print
@@ -127,22 +156,68 @@ export default function LabelsTab() {
   const individual = (row) => <tr key={row.id}><td><input type="checkbox" aria-label={`Select label ${row.id}`} checked={selected.has(row.id)} onChange={() => toggle(row.id)} /></td>{rowCells(row)}<td>{actions([row])}</td></tr>;
 
   return <div className="data-workspace label-workspace grid min-w-0 grid-cols-[minmax(0,1fr)] gap-3">
+    {importNotice && <SuccessToast title="Impor Excel berhasil" onClose={closeImportNotice}>
+      {importNotice.imported ?? 0} ditambahkan · {importNotice.updated ?? 0} diperbarui · {importNotice.skipped ?? 0} dilewati
+    </SuccessToast>}
     <section className="panel">
-      <div className="awb-section-heading"><div><span className="label-eyebrow">LABEL CARGO · 100 × 50 MM</span><h3>Print Label</h3><p>{rows.length} label tersedia untuk dicetak</p></div>
-        <div className="flex flex-wrap gap-2"><input ref={fileRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={(e) => { const file = e.target.files?.[0]; e.target.value = ""; if (file) void upload(file); }} />
+      <div className="awb-section-heading">
+        <div>
+          <h3>Print Label</h3>
+          <p>{rows.length} label · 100 × 50 mm</p>
+        </div>
+        <div className="flex flex-wrap items-center gap-3">
+          <input ref={fileRef} type="file" accept=".xlsx,.xls" className="hidden"
+            onChange={(e) => { const file = e.target.files?.[0]; e.target.value = ""; if (file) void upload(file); }} />
           <a className="btn-ghost" href="/api/labels/template">Download Template</a>
-          <button className="btn-clay" disabled={busy} onClick={() => fileRef.current?.click()}>{busy ? "Processing..." : "Import Excel"}</button>
-          <button className="btn-ghost" disabled={!filtered.length} onClick={() => print(filtered)}>Print All Filtered</button>
-          <button className="btn-ghost" disabled={!selectedRows.length} onClick={() => print(selectedRows)}>Print Selected ({selectedRows.length})</button>
-          <button className="awb-delete" disabled={!selectedRows.length || busy} onClick={() => remove(selectedRows)}>Delete Selected</button>
-        </div></div>
+          <button type="button" className="btn-clay" disabled={busy} onClick={() => fileRef.current?.click()}>
+            {busy ? "Processing..." : "Import Excel"}
+          </button>
+        </div>
+      </div>
       {error && <p role="alert" className="text-red-400 text-sm mt-4">{error}</p>}{message && <p role="status" className="st-saved text-sm mt-4">{message}</p>}
     </section>
     <section className="panel"><div className="flex flex-wrap items-center justify-between gap-3"><h3>Display Mode</h3><div className="flex flex-wrap gap-2"><button className={grouped ? "btn-clay" : "btn-ghost"} aria-pressed={grouped} onClick={() => { setGrouped(true); setPage(1); }}>Grouping</button><button className={!grouped ? "btn-clay" : "btn-ghost"} aria-pressed={!grouped} onClick={() => { setGrouped(false); setPage(1); }}>Non-Grouping</button></div></div>
       <form onSubmit={(e) => { e.preventDefault(); setApplied(filters); setPage(1); }}><div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mt-4">{[["mawb", "MAWB"], ["hawb", "HAWB"], ["airlines_name", "Airlines"], ["flight_no", "Flight"]].map(([key, label]) => <label key={key} className="text-xs font-bold">{label}<input className="field mt-1" list={`label-filter-${key}`} value={filters[key]} onChange={(e) => setFilters({ ...filters, [key]: e.target.value })} /><datalist id={`label-filter-${key}`}>{[...new Set(rows.map((row) => row[key]).filter(Boolean))].sort().map((value) => <option key={value} value={value} />)}</datalist></label>)}</div><div className="flex gap-3 mt-4"><button className="btn-clay" type="submit">Apply Filters</button><button className="btn-ghost" type="button" onClick={() => { setFilters(emptyFilters); setApplied(emptyFilters); setPage(1); }}>Reset</button></div></form>
     </section>
-    <section className="panel"><div className="awb-table-scroll" tabIndex={0} role="region" aria-label="Tabel label, dapat digeser horizontal"><table className="awb-data-table w-full"><thead><tr><th><input type="checkbox" aria-label="Select all filtered labels" checked={filtered.length > 0 && filtered.every((row) => selected.has(row.id))} onChange={(e) => setSelected((old) => { const next = new Set(old); filtered.forEach((row) => e.target.checked ? next.add(row.id) : next.delete(row.id)); return next; })} /></th><th>Part</th><th>MAWB</th><th>MAWB PCS</th><th>HAWB</th><th>HAWB PCS</th><th>Airlines</th><th>Flight</th><th>Route</th><th>Actions</th></tr></thead><tbody>
-      {loading ? <tr><td colSpan="10">Loading labels...</td></tr> : !filtered.length ? <tr><td colSpan="10">No labels found.</td></tr> : visible.map(([key, members]) => grouped ? <Fragment key={key}><tr><td><button className="awb-number" aria-expanded={expanded.has(key)} aria-label={`${expanded.has(key) ? "Collapse" : "Expand"} group ${members[0].hawb}`} onClick={() => setExpanded((old) => { const next = new Set(old); if (next.has(key)) next.delete(key); else next.add(key); return next; })}>{expanded.has(key) ? "−" : "+"}</button></td><td>{members.length} parts</td><td>{members[0].mawb}</td><td>{members[0].pcs_mawb ?? "-"}</td><td>{members[0].hawb}</td><td>{members[0].pcs_hawb ?? "-"}</td><td>{members[0].airlines_name ?? "-"}</td><td>{members[0].flight_no ?? "-"}</td><td>{members[0].route ?? "-"}</td><td>{actions(members)}</td></tr>{expanded.has(key) && members.map(individual)}</Fragment> : individual(members[0]))}
+    <section className="panel">
+      <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3 mb-4">
+        <button type="button" className="btn-ghost" disabled={!filtered.length} onClick={() => print(filtered)}>
+          Print All Filtered
+        </button>
+        <div className="flex flex-wrap items-center gap-3">
+          <button type="button" className="btn-ghost" disabled={!selectedRows.length} onClick={() => print(selectedRows)}>
+            Print Selected ({selectedRows.length})
+          </button>
+          <button type="button" className="awb-delete" disabled={!selectedRows.length || busy} onClick={() => remove(selectedRows)}>
+            Delete Selected
+          </button>
+        </div>
+      </div>
+      <div className="awb-table-scroll" tabIndex={0} role="region" aria-label="Tabel label, dapat digeser horizontal"><table className="awb-data-table w-full"><thead><tr><th><input type="checkbox" aria-label="Select all filtered labels" checked={filtered.length > 0 && filtered.every((row) => selected.has(row.id))} onChange={(e) => setSelected((old) => { const next = new Set(old); filtered.forEach((row) => e.target.checked ? next.add(row.id) : next.delete(row.id)); return next; })} /></th><th>Part</th><th>MAWB</th><th>MAWB PCS</th><th>HAWB</th><th>HAWB PCS</th><th>Airlines</th><th>Flight</th><th>Route</th><th>Created At (WIB)</th><th>Actions</th></tr></thead><tbody>
+      {loading ? <tr><td colSpan="11">Loading labels...</td></tr> : !filtered.length ? <tr><td colSpan="11">No labels found.</td></tr> :
+        visible.map(([key, members]) => {
+          const first = members[0];
+          if (!grouped) return individual(first);
+          const isExpanded = expanded.has(key);
+          const toggleGroup = () => setExpanded((previous) => {
+            const next = new Set(previous);
+            if (next.has(key)) next.delete(key);
+            else next.add(key);
+            return next;
+          });
+          return <Fragment key={key}>
+            <tr className={isExpanded ? "cursor-pointer font-bold" : "cursor-pointer"} onClick={toggleGroup}>
+              <td><ExpandRowButton expanded={isExpanded}
+                label={`${isExpanded ? "Collapse" : "Expand"} group ${first.hawb}`} onToggle={toggleGroup} /></td>
+              <td>{members.length} parts</td><td>{first.mawb}</td><td>{first.pcs_mawb ?? "-"}</td>
+              <td>{first.hawb}</td><td>{first.pcs_hawb ?? "-"}</td><td>{first.airlines_name ?? "-"}</td>
+              <td>{first.flight_no ?? "-"}</td><td>{first.route ?? "-"}</td>
+              <td className="whitespace-nowrap">{formatCreatedAt(first.created_at)}</td>
+              <td onClick={(event) => event.stopPropagation()}>{actions(members)}</td>
+            </tr>
+            {isExpanded && members.map(individual)}
+          </Fragment>;
+        })}
     </tbody></table></div><div className="flex flex-wrap items-center justify-between gap-3 mt-4 text-xs muted"><span>{filtered.length} labels, {grouped ? `${groups.size} groups` : "individual view"}</span><div className="flex items-center gap-3"><button className="btn-ghost !py-1 !px-3" disabled={currentPage <= 1} onClick={() => setPage(currentPage - 1)}>Prev</button><span>{currentPage} / {pages}</span><button className="btn-ghost !py-1 !px-3" disabled={currentPage >= pages} onClick={() => setPage(currentPage + 1)}>Next</button></div></div></section>
   </div>;
 }

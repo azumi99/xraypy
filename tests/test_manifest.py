@@ -23,7 +23,9 @@ def test_lookup_parameterized_and_warehouse(monkeypatch, warehouse):
         for key, value in {"HOST": site, "USER": "reader", "PASSWORD": "secret", "NAME": site}.items():
             monkeypatch.setenv(f"MANIFEST_{site}_DB_{key}", value)
         monkeypatch.delenv(f"MANIFEST_{site}_DB_READONLY_HOST", raising=False)
-    manifest._lookup(warehouse, "M' OR 1=1", "H' OR 1=1")
+    cursor.fetchone.return_value["created_at"] = "2026-11-25 12:00:00"
+    row = manifest._lookup(warehouse, "M' OR 1=1", "H' OR 1=1")
+    assert row["created_at"] == "2026-11-25 12:00:00"
     assert connect.call_args.kwargs["host"] == warehouse.upper()
     sql, params = cursor.execute.call_args.args
     if warehouse == "cas":
@@ -32,6 +34,7 @@ def test_lookup_parameterized_and_warehouse(monkeypatch, warehouse):
         assert "BINARY" not in sql  # BINARY menonaktifkan indeks pada tabel 1.6 jt baris
     else:
         assert "WHERE BINARY MasterAWB = BINARY %s AND BINARY HostAWB = BINARY %s" in sql
+    assert "`created_at`" in sql
     assert "OR 1=1" not in sql
     assert params == ("M' OR 1=1", "H' OR 1=1")
     connection.close.assert_called_once()

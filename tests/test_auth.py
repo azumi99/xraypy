@@ -124,8 +124,10 @@ def test_authenticated_warehouse_awb_isolation(tmp_path, monkeypatch):
     import app.main as main
     import app.awb.router as awb_router
 
+    manifest_dates = {"bgd": "2026-11-24T10:00:00", "cas": "2026-11-25T11:00:00"}
+
     async def manifest_lookup(warehouse, mawb, hawb):
-        return {"status": "found", "data": {"warehouse": warehouse}}
+        return {"status": "found", "data": {"warehouse": warehouse, "created_at": manifest_dates[warehouse]}}
 
     async def manifest_candidates(warehouse, hawb):
         return []
@@ -143,7 +145,8 @@ def test_authenticated_warehouse_awb_isolation(tmp_path, monkeypatch):
         assert client.get("/api/sources").json()["cameras"] == ["camera:0"]
         assert client.post("/api/sources", json={"view": "top", "kind": "camera:1"}).status_code == 403
         bgd = client.post("/api/awb", json={"awb_number": "BGD-TEST"}).json()
-        assert client.get(f"/api/awb/{bgd['id']}/manifest?warehouse=cas").json()["data"]["warehouse"] == "bgd"
+        manifest_data = client.get(f"/api/awb/{bgd['id']}/manifest?warehouse=cas").json()["data"]
+        assert manifest_data == {"warehouse": "bgd", "created_at": manifest_dates["bgd"]}
         assert client.post("/api/auth/logout").status_code == 200
         assert client.post("/api/auth/login", json={"email": "cas@paratekno.com", "password": "admin123"}).status_code == 200
         assert client.get("/api/sources").json()["cameras"] == ["camera:1"]
@@ -152,7 +155,8 @@ def test_authenticated_warehouse_awb_isolation(tmp_path, monkeypatch):
         assert client.get(f"/api/awb/{bgd['id']}").status_code == 404
         assert client.get(f"/api/awb/{bgd['id']}/manifest").status_code == 404
         cas = client.post("/api/awb", json={"awb_number": "CAS-TEST"}).json()
-        assert client.get(f"/api/awb/{cas['id']}/manifest?warehouse=bgd").json()["data"]["warehouse"] == "cas"
+        manifest_data = client.get(f"/api/awb/{cas['id']}/manifest?warehouse=bgd").json()["data"]
+        assert manifest_data == {"warehouse": "cas", "created_at": manifest_dates["cas"]}
         assert [item["awb_number"] for item in client.get("/api/awb").json()["items"]] == ["CAS-TEST"]
         assert client.post("/api/auth/logout").status_code == 200
         assert client.post("/api/auth/login", json={"email": "bgd@paratekno.com", "password": "admin123"}).status_code == 200
