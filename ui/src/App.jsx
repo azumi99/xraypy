@@ -9,6 +9,7 @@ import AwbDetailPage from "./components/AwbDetailPage";
 import LabelsTab from "./components/LabelsTab";
 import { warehousePath } from "./routes";
 import SettingsTab from "./components/SettingsTab";
+import UsersTab from "./components/UsersTab";
 const Dashboard = lazy(() => import("./components/Dashboard"));
 
 const TABS = [
@@ -17,10 +18,11 @@ const TABS = [
   { path: "/awb", label: "Queue AWB", icon: <TagIcon /> },
   { path: "/matrix", label: "Matrix", icon: <TableIcon /> },
   { path: "/labels", label: "Print Label", icon: <PrinterIcon /> },
+  { path: "/users", label: "Manajemen User", icon: <SettingsIcon /> },
   { path: "/settings", label: "Setting", icon: <SettingsIcon /> },
 ];
 
-const PAGE_TITLES = { "/dashboard": "Dashboard", "/live": "Xray", "/awb": "Queue AWB", "/matrix": "Matrix", "/labels": "Print Label", "/settings": "Setting" };
+const PAGE_TITLES = { "/dashboard": "Dashboard", "/live": "Xray", "/awb": "Queue AWB", "/matrix": "Matrix", "/labels": "Print Label", "/settings": "Setting", "/users": "Manajemen User" };
 
 /** Router ringan berbasis History API — URL ikut berubah ke /namahalaman. */
 export function usePathRoute() {
@@ -190,9 +192,12 @@ export default function App() {
 function AuthenticatedApp({ user, onLogout, logoutError, logoutPending }) {
   const [currentPath, navigateRoute] = usePathRoute();
   const readOnly = user.role === "bc";
+  const admin = user.role === "admin";
+  const printOnly = user.role === "label_print";
   const requestedPath = warehousePath(currentPath, user.access);
-  const canonicalPath = readOnly && !/^\/(?:dashboard|awb(?:\/\d+)?)$/.test(requestedPath.slice(user.access.length + 1))
-    ? warehousePath("/dashboard", user.access) : requestedPath;
+  const canonicalPath = admin ? warehousePath("/users", user.access) : printOnly ? warehousePath("/labels", user.access) : readOnly && !/^\/(?:dashboard|awb(?:\/\d+)?)$/.test(requestedPath.slice(user.access.length + 1))
+    ? warehousePath("/dashboard", user.access)
+    : requestedPath === warehousePath("/users", user.access) ? warehousePath("/dashboard", user.access) : requestedPath;
   const path = canonicalPath.slice(user.access.length + 1);
   const navigate = (to) => navigateRoute(`/${user.access}${to}`);
   useEffect(() => {
@@ -212,11 +217,11 @@ function AuthenticatedApp({ user, onLogout, logoutError, logoutPending }) {
     try { return localStorage.getItem("xray-theme") === "light" ? "light" : "dark"; }
     catch { return "dark"; }
   });
-  const { frames, connected, waitingEventsAvailable, onEvent } = useStream();
+  const { frames, connected, waitingEventsAvailable, onEvent } = useStream(!printOnly && !admin);
 
   const refreshSession = useCallback(async () => {
-    setSession(await api("/session/state").catch(() => null));
-  }, []);
+    if (!printOnly && !admin) setSession(await api("/session/state").catch(() => null));
+  }, [printOnly, admin]);
 
   useEffect(() => { refreshSession(); }, [refreshSession]);
   useEffect(() => {
@@ -252,7 +257,7 @@ function AuthenticatedApp({ user, onLogout, logoutError, logoutPending }) {
         </div>
         <div id="operator-menu" className={`${menuOpen ? "flex" : "hidden"} flex-col gap-4 md:flex md:flex-1 md:gap-6`}>
         <nav aria-label="Navigasi utama" className="grid grid-cols-2 md:grid-cols-1 gap-1.5">
-          {TABS.filter((tab) => !readOnly || ["/dashboard", "/awb"].includes(tab.path)).map((t) => (
+          {TABS.filter((tab) => admin ? tab.path === "/users" : tab.path !== "/users" && (printOnly ? tab.path === "/labels" : !readOnly || ["/dashboard", "/awb"].includes(tab.path))).map((t) => (
             <button
               key={t.path}
               className={`side-nav-item !w-full min-h-11 ${activePath === t.path ? "active" : ""}`}
@@ -266,16 +271,16 @@ function AuthenticatedApp({ user, onLogout, logoutError, logoutPending }) {
         </nav>
         <div className="sidebar-footer md:mt-auto">
           <div className="sidebar-account">
-            <div className="sidebar-account-heading"><span>{readOnly ? "BEA CUKAI" : "AKUN OPERATOR"}</span><span className="sidebar-warehouse">{user.access.toUpperCase()}</span></div>
+            <div className="sidebar-account-heading"><span>{admin ? "ADMIN GLOBAL" : printOnly ? "PRINT LABEL" : readOnly ? "BEA CUKAI" : "AKUN OPERATOR"}</span><span className="sidebar-warehouse">{admin ? "CAS / BGD" : user.access.toUpperCase()}</span></div>
             <span className="sidebar-email">{user.email}</span>
             <button type="button" className="sidebar-logout" onClick={onLogout} disabled={logoutPending}>{logoutPending ? "Memuat..." : "Logout"}</button>
             {logoutError && <p role="alert" className="text-sm text-red-400">{logoutError}</p>}
           </div>
-          <div className="sidebar-status">
+          {!printOnly && !admin && <div className="sidebar-status">
             <div className="sidebar-status-row"><span>Koneksi</span><strong className={connected ? "sidebar-connected" : ""}><span className="sidebar-status-dot" />{connected ? "Terhubung" : "Terputus"}</strong></div>
             <div className="sidebar-status-row"><span>Sesi</span><strong>{session?.running ? "Aktif" : "Tidak aktif"}</strong></div>
             <div className="sidebar-session-info">{session?.batch_id ?? "Belum ada sesi"} · {session?.parcel_count ?? 0} paket</div>
-          </div>
+          </div>}
           <button
             type="button"
             className="theme-switch"
@@ -308,7 +313,7 @@ function AuthenticatedApp({ user, onLogout, logoutError, logoutPending }) {
         </div>
         <main className="p-4 sm:px-7 pb-7 w-full min-w-0">
           {activePath === "/dashboard" && <Suspense fallback={<div className="panel muted">Memuat dashboard…</div>}><Dashboard session={session} onEvent={onEvent} /></Suspense>}
-          {!readOnly && <div hidden={activePath !== "/live"}>
+          {!readOnly && !printOnly && !admin && <div hidden={activePath !== "/live"}>
             <LiveTab key={user.access} warehouse={user.access} frames={frames} session={session}
               visible={activePath === "/live"} onSessionChange={refreshSession} onEvent={onEvent}
               connected={connected} waitingEventsAvailable={waitingEventsAvailable} />
@@ -317,11 +322,14 @@ function AuthenticatedApp({ user, onLogout, logoutError, logoutPending }) {
             <AwbTab warehouse={user.access} readOnly={readOnly} onChanged={refreshSession} onOpenDetail={(id) => navigate(`/awb/${id}`)} onEvent={onEvent} connected={connected} />
           )}
           {activePath === "/matrix" && <MatrixTab key={user.access} onEvent={onEvent} connected={connected} />}
-          {activePath === "/labels" && <LabelsTab />}
+          {activePath === "/labels" && <LabelsTab printOnly={printOnly} />}
+          {admin && activePath === "/users" && <UsersTab />}
           {activePath === "/settings" && <SettingsTab warehouse={user.access} />}
           {awbDetailId && (
             <AwbDetailPage
+              key={user.access}
               id={awbDetailId}
+              warehouse={user.access}
               readOnly={readOnly}
               onBack={() => navigate("/awb")}
               onChanged={refreshSession}

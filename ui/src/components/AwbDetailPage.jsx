@@ -51,11 +51,45 @@ function XrayFrame({ item, parcel, reference, view }) {
 
 
 /** Halaman detail AWB (route /awb/:id) — foto 2 POV + info parcel + audit. */
-export default function AwbDetailPage({ id, onBack, onChanged, readOnly = false }) {
+const BGD_MANIFEST_FIELDS = [
+  ["Penerbangan", [["MAWB", "mawb"], ["HAWB", "hawb"], ["Airlines", "airlines_code"], ["Flight", "flight_no"], ["Tanggal penerbangan", "date_of_flight"], ["Asal", "origin"]]],
+  ["Kargo", [["Jumlah", "quantity"], ["Berat", "weight"], ["Volume", "volume"], ["HS code", "hs_code"], ["Deskripsi", "description_goods"], ["Nomor bag", "bag_number"]]],
+  ["Pengirim & Penerima", [["Pengirim", "shipper_name"], ["Kota pengirim", "shipper_city"], ["Penerima", "consignee_name"], ["Kota penerima", "consignee_city"], ["Negara penerima", "consignee_country"]]],
+  ["Dokumen", [["Nomor AJU", "nomor_aju"], ["BC11", "bc11"], ["Tanggal BC", "tgl_bc"], ["SPPB", "sppb"], ["Tanggal SPPB", "tgl_sppb"], ["Tanggal masuk", "date_entry"], ["Waktu masuk", "time_entry"]]],
+];
+
+const CAS_MANIFEST_FIELDS = [
+  ["Rute pengiriman", [
+    ["MAWB", "mawb"], ["Tanggal MAWB", "mawb_date"],
+    ["HAWB", "hawb"], ["Tanggal HAWB", "hawb_date"],
+    ["Pelabuhan asal", "origin"], ["Pelabuhan akhir", "destination"],
+  ]],
+  ["Kargo", [
+    ["Jumlah kemasan", "quantity"], ["Jenis kemasan", "package_type"],
+    ["Berat bruto", "weight"], ["Volume", "volume"],
+  ]],
+  ["Pengirim & Penerima", [
+    ["Pengirim", "shipper_name"], ["Alamat pengirim", "shipper_address"], ["Negara pengirim", "shipper_country"],
+    ["Penerima", "consignee_name"], ["Alamat penerima", "consignee_address"], ["Negara penerima", "consignee_country"],
+  ]],
+  ["Dokumen", [
+    ["Nomor AJU", "nomor_aju"], ["Nomor pos", "no_pos"],
+    ["Nomor subpos", "no_sub_pos"], ["Status detail", "status_detail"],
+  ]],
+];
+
+export default function AwbDetailPage({ id, onBack, onChanged, warehouse, readOnly = false }) {
   const [data, setData] = useState(null);
   const [notFound, setNotFound] = useState(false);
   const [audit, setAudit] = useState([]);
   const [manifest, setManifest] = useState(null);
+  const manifestData = manifest?.status === "found" ? manifest.data : null;
+  const manifestFields = warehouse === "cas"
+    ? CAS_MANIFEST_FIELDS.map(([title, fields]) => [title, fields.filter(([, key]) => {
+      const value = manifestData?.[key];
+      return value != null && !["", "-", "—"].includes(String(value).trim());
+    })]).filter(([, fields]) => fields.length)
+    : BGD_MANIFEST_FIELDS;
   const [manifestAttempt, setManifestAttempt] = useState(0);
   const [error, setError] = useState(false);
   const [groupItems, setGroupItems] = useState([]);
@@ -114,10 +148,10 @@ export default function AwbDetailPage({ id, onBack, onChanged, readOnly = false 
   useEffect(() => {
     let active = true;
     setManifest(null);
-    api(`/awb/${id}/manifest`).then((result) => { if (active) setManifest(result); })
+    api(`/awb/${id}/manifest`, { cache: "no-store" }).then((result) => { if (active) setManifest(result); })
       .catch(() => { if (active) setManifest({ status: "unavailable" }); });
     return () => { active = false; };
-  }, [id, manifestAttempt]);
+  }, [id, warehouse, manifestAttempt]);
 
   useEffect(() => {
     let active = true;
@@ -243,12 +277,20 @@ export default function AwbDetailPage({ id, onBack, onChanged, readOnly = false 
           <span>{!manifest ? "Memuat manifest..." : manifest.status === "missing_numbers" ? "MAWB dan HAWB diperlukan untuk mencari manifest." : manifest.status === "not_found" ? "Manifest tidak ditemukan untuk MAWB dan HAWB ini." : "Manifest tidak tersedia saat ini."}</span>
           {manifest?.status === "unavailable" && <button className="manifest-retry" onClick={() => setManifestAttempt((n) => n + 1)}>Coba lagi</button>}
         </div>}
-        {manifest?.status === "found" && <div className="manifest-groups">{[
-          ["Penerbangan", [["MAWB", "mawb"], ["HAWB", "hawb"], ["Airlines", "airlines_code"], ["Flight", "flight_no"], ["Tanggal penerbangan", "date_of_flight"], ["Asal", "origin"]]],
-          ["Kargo", [["Jumlah", "quantity"], ["Berat", "weight"], ["Volume", "volume"], ["HS code", "hs_code"], ["Deskripsi", "description_goods"], ["Nomor bag", "bag_number"]]],
-          ["Pengirim & Penerima", [["Pengirim", "shipper_name"], ["Kota pengirim", "shipper_city"], ["Penerima", "consignee_name"], ["Kota penerima", "consignee_city"], ["Negara penerima", "consignee_country"]]],
-          ["Dokumen", [["Nomor AJU", "nomor_aju"], ["BC11", "bc11"], ["Tanggal BC", "tgl_bc"], ["SPPB", "sppb"], ["Tanggal SPPB", "tgl_sppb"], ["Tanggal masuk", "date_entry"], ["Waktu masuk", "time_entry"]]],
-        ].map(([title, fields]) => <div className="manifest-group" key={title}><h4>{title}</h4><dl>{fields.map(([label, key]) => <div key={key}><dt>{label}</dt><dd>{manifest.data[key] ?? "—"}</dd></div>)}</dl></div>)}</div>}
+        {manifest?.status === "found" && (manifestData && manifestFields.length ? (
+          <div className="manifest-groups">
+            {manifestFields.map(([title, fields]) => (
+              <div className="manifest-group" key={title}>
+                <h4>{title}</h4>
+                <dl>
+                  {fields.map(([label, key]) => <div key={key}>
+                    <dt>{label}</dt><dd>{manifestData[key] ?? "—"}</dd>
+                  </div>)}
+                </dl>
+              </div>
+            ))}
+          </div>
+        ) : <div className="manifest-empty">Record manifest ditemukan, tetapi detailnya belum terisi.</div>)}
       </section>
 
       {audit.length > 0 && (

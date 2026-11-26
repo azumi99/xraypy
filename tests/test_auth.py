@@ -239,7 +239,7 @@ def test_bc_account_has_warehouse_scoped_read_only_access(client, warehouse):
     store = AuthStore(settings, None)
     asyncio.run(store.initialize())
     store.close()
-    login = client.post("/api/auth/login", json={
+    login = client.post("/api/auth/web-login", json={
         "email": f"bc-{warehouse}@paratekno.com", "password": "test-bc-password",
     })
     assert login.status_code == 200
@@ -254,3 +254,91 @@ def test_bc_account_has_warehouse_scoped_read_only_access(client, warehouse):
     with pytest.raises(WebSocketDisconnect):
         with client.websocket_connect("wss://testserver/ws/push/top"):
             pass
+
+
+@pytest.mark.parametrize("warehouse", ["bgd", "cas"])
+def test_label_print_role_is_web_only_and_can_list_labels(client, warehouse):
+    settings = client.app.state.settings
+    setattr(settings, f"label_print_{warehouse}_password", "test-label-password")
+    store = AuthStore(settings, None)
+    asyncio.run(store.initialize())
+    store.close()
+
+    credentials = {"email": f"label-print-{warehouse}@paratekno.com", "password": "test-label-password"}
+    assert client.post("/api/auth/login", json=credentials).status_code == 403
+    assert client.post("/api/auth/web-login", json=credentials).json()["user"]["role"] == "label_print"
+
+    async def list_labels():
+        from app.warehouse import current_warehouse
+        return [{"warehouse": current_warehouse()}]
+
+    client.app.state.store = SimpleNamespace(list_labels=list_labels)
+    assert client.get("/api/labels").json() == [{"warehouse": warehouse}]
+    assert client.get("/api/awb").status_code == 403
+    assert client.post("/api/labels/import").status_code == 403
+    assert client.post("/api/labels/delete-many", json={"ids": [1]}).status_code == 403
+    assert client.get("/dashboard", follow_redirects=False).headers["location"] == f"/{warehouse}/labels"
+    with pytest.raises(WebSocketDisconnect):
+        with client.websocket_connect("wss://testserver/ws/stream"):
+            pass
+
+
+def test_global_admin_manages_users_and_invalidates_previous_sessions(client):
+    settings = client.app.state.settings
+    settings.admin_email = "developer@example.com"
+    settings.admin_password = "developer-test-password"
+    asyncio.run(client.app.state.auth_store.initialize())
+    credentials = {"email": settings.admin_email, "password": settings.admin_password}
+    assert client.post("/api/auth/login", json=credentials).status_code == 403
+    assert client.post("/api/auth/web-login", json=credentials).json()["user"]["role"] == "admin"
+    assert client.get("/api/awb").status_code == 403
+    assert client.get("/dashboard", follow_redirects=False).headers["location"] == "/bgd/users"
+    email = "new.operator@example.com"
+    password = "initial-test-password"
+    account = {"email": email, "password": password, "role": "operator", "access": "cas"}
+    assert client.post("/api/users", json=account).status_code == 201
+    assert client.post("/api/users", json=account).status_code == 409
+    listed = client.get("/api/users").json()
+    assert {"email": email, "role": "operator", "access": "cas", "active": True} in listed
+    assert all("password_hash" not in user for user in listed)
+    operator = TestClient(client.app, base_url="https://testserver")
+    assert operator.post("/api/auth/login", json={"email": email, "password": password}).status_code == 200
+    assert operator.get("/api/users").status_code == 403
+    updated = {"role": "label_print", "access": "bgd", "active": True, "password": "updated-test-password"}
+    assert client.put(f"/api/users/{email}", json=updated).status_code == 200
+    assert operator.get("/api/auth/session").json()["authenticated"] is False
+    assert operator.post("/api/auth/login", json={"email": email, "password": password}).status_code == 401
+    assert operator.post("/api/auth/login", json={"email": email, "password": updated["password"]}).status_code == 403
+    assert operator.post("/api/auth/web-login", json={"email": email, "password": updated["password"]}).json()["user"]["access"] == "bgd"
+    assert client.put(f"/api/users/{email}", json={**updated, "active": False}).status_code == 200
+    assert operator.get("/api/auth/session").json()["authenticated"] is False
+    operator.close()
+    assert client.put(f"/api/users/{settings.admin_email}", json=updated).status_code == 404
+
+
+def test_login_limit_shared_by_web_and_mobile(client, monkeypatch):
+    from app import login_rate_limit
+
+    now = 1_000
+    monkeypatch.setattr(login_rate_limit, "monotonic", lambda: now)
+    for index in range(login_rate_limit.LoginRateLimiter.ACCOUNT_LIMIT):
+        path = "/api/auth/login" if index % 2 == 0 else "/api/auth/web-login"
+        assert client.post(path, json={"email": "unknown@example.com", "password": "wrong"}).status_code == 401
+
+    for path in ("/api/auth/login", "/api/auth/web-login"):
+        blocked = client.post(path, json={"email": " UNKNOWN@example.com ", "password": "wrong"})
+        assert blocked.status_code == 429
+        assert blocked.headers["Retry-After"] == "300"
+
+    now += 300
+    assert client.post("/api/auth/login", json={"email": "unknown@example.com", "password": "wrong"}).status_code == 401
+
+
+def test_login_ip_limit_blocks_multiple_accounts(client):
+    from app.login_rate_limit import LoginRateLimiter
+
+    for index in range(LoginRateLimiter.IP_LIMIT):
+        assert client.post("/api/auth/login", json={"email": f"missing{index}@example.com", "password": "wrong"}).status_code == 401
+    blocked = client.post("/api/auth/web-login", json={"email": "bgd@paratekno.com", "password": "admin123"})
+    assert blocked.status_code == 429
+    assert int(blocked.headers["Retry-After"]) > 0

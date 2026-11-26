@@ -26,8 +26,9 @@ def issue_session(settings, user: dict) -> tuple[str, dict]:
         "sub": user["email"], "access": user["access"], "iat": now,
         "exp": now + SESSION_SECONDS, "jti": secrets.token_urlsafe(32),
     }
-    if user.get("role") == "bc":
-        claims["role"] = "bc"
+    if user.get("role") in ("bc", "label_print", "admin"):
+        claims["role"] = user["role"]
+    claims["ver"] = user.get("session_version", 0)
     return jwt.encode(claims, settings.jwt_secret, algorithm="HS256"), claims
 
 
@@ -49,6 +50,17 @@ def session_claims(connection) -> dict | None:
         return None
 
 
+async def current_session_user(connection, claims):
+    if not claims:
+        return None
+    user = await connection.app.state.auth_store.get(claims["sub"])
+    if not user or not user["active"] or user["session_version"] != claims.get("ver", 0):
+        return None
+    if user["access"] != claims["access"] or user["role"] != claims.get("role", "operator"):
+        return None
+    return user
+
+
 def identity(connection):
     claims = session_claims(connection)
     if claims is None:
@@ -58,8 +70,8 @@ def identity(connection):
 
 def public_user(user: dict) -> dict:
     result = {"email": user["email"], "access": user["access"]}
-    if user.get("role") == "bc":
-        result["role"] = "bc"
+    if user.get("role") in ("bc", "label_print", "admin"):
+        result["role"] = user["role"]
     return result
 
 
@@ -73,7 +85,8 @@ def require_operator(request: Request) -> None:
 
 
 async def require_operator_ws(websocket: WebSocket) -> bool:
-    if same_origin(websocket) and authorized(websocket):
+    user = await current_session_user(websocket, session_claims(websocket)) if same_origin(websocket) else None
+    if user and user["role"] not in ("label_print", "admin"):
         return True
     await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="authentication required")
     return False

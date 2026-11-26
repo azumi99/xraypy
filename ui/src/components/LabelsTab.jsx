@@ -62,7 +62,7 @@ async function printLabels(rows, parts, setError) {
   }
 }
 
-export default function LabelsTab() {
+export default function LabelsTab({ printOnly = false }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -149,9 +149,9 @@ export default function LabelsTab() {
     <button className="label-action label-action-print" onClick={() => print(items)}>
       <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M6 9V3h12v6M6 18H4V9h16v9h-2M6 14h12v7H6z" /><path d="M17 11h1" /></svg>Print
     </button>
-    <button className="label-action label-action-delete" disabled={busy} onClick={() => remove(items)}>
+    {!printOnly && <button className="label-action label-action-delete" disabled={busy} onClick={() => remove(items)}>
       <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5" /></svg>Delete
-    </button>
+    </button>}
   </div>;
   const individual = (row) => <tr key={row.id}><td><input type="checkbox" aria-label={`Select label ${row.id}`} checked={selected.has(row.id)} onChange={() => toggle(row.id)} /></td>{rowCells(row)}<td>{actions([row])}</td></tr>;
 
@@ -165,14 +165,14 @@ export default function LabelsTab() {
           <h3>Print Label</h3>
           <p>{rows.length} label · 100 × 50 mm</p>
         </div>
-        <div className="flex flex-wrap items-center gap-3">
+        {!printOnly && <div className="flex flex-wrap items-center gap-3">
           <input ref={fileRef} type="file" accept=".xlsx,.xls" className="hidden"
             onChange={(e) => { const file = e.target.files?.[0]; e.target.value = ""; if (file) void upload(file); }} />
           <a className="btn-ghost" href="/api/labels/template">Download Template</a>
           <button type="button" className="btn-clay" disabled={busy} onClick={() => fileRef.current?.click()}>
             {busy ? "Processing..." : "Import Excel"}
           </button>
-        </div>
+        </div>}
       </div>
       {error && <p role="alert" className="text-red-400 text-sm mt-4">{error}</p>}{message && <p role="status" className="st-saved text-sm mt-4">{message}</p>}
     </section>
@@ -188,9 +188,9 @@ export default function LabelsTab() {
           <button type="button" className="btn-ghost" disabled={!selectedRows.length} onClick={() => print(selectedRows)}>
             Print Selected ({selectedRows.length})
           </button>
-          <button type="button" className="awb-delete" disabled={!selectedRows.length || busy} onClick={() => remove(selectedRows)}>
+          {!printOnly && <button type="button" className="awb-delete" disabled={!selectedRows.length || busy} onClick={() => remove(selectedRows)}>
             Delete Selected
-          </button>
+          </button>}
         </div>
       </div>
       <div className="awb-table-scroll" tabIndex={0} role="region" aria-label="Tabel label, dapat digeser horizontal"><table className="awb-data-table w-full"><thead><tr><th><input type="checkbox" aria-label="Select all filtered labels" checked={filtered.length > 0 && filtered.every((row) => selected.has(row.id))} onChange={(e) => setSelected((old) => { const next = new Set(old); filtered.forEach((row) => e.target.checked ? next.add(row.id) : next.delete(row.id)); return next; })} /></th><th>Part</th><th>MAWB</th><th>MAWB PCS</th><th>HAWB</th><th>HAWB PCS</th><th>Airlines</th><th>Flight</th><th>Route</th><th>Created At (WIB)</th><th>Actions</th></tr></thead><tbody>

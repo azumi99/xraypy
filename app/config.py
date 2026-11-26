@@ -201,8 +201,12 @@ class Settings(BaseSettings):
     jwt_secret: str | None = None
     bc_bgd_password: str | None = None
     bc_cas_password: str | None = None
+    label_print_bgd_password: str | None = None
+    label_print_cas_password: str | None = None
     turnstile_site_key: str | None = None
     turnstile_secret_key: str | None = None
+    admin_email: str | None = None
+    admin_password: str | None = None
     bootstrap_password: str | None = None
     photo_sync_enabled: bool = False
     photo_sync_url: str = ""

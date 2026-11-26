@@ -29,12 +29,14 @@ from .embedding.registry import create_embedder
 from .embedding.worker import EmbeddingWorker
 from .events import EventBus
 from .labels import router as labels_router
+from .login_rate_limit import LoginRateLimiter
 from .manifest_tunnels import manifest_tunnels
 from .pipeline import Pipeline
 from .security import (
     COOKIE,
     REFRESH_AFTER,
     SESSION_SECONDS,
+    current_session_user,
     identity,
     issue_session,
     public_user,
@@ -159,6 +161,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(title="cv-service", version="0.1.0", lifespan=lifespan)
     app.state.settings = settings
     app.state.revoked_jtis: set[str] = set()
+    login_limiter = LoginRateLimiter()
 
     @app.middleware("http")
     async def protect(request: Request, call_next):
@@ -178,9 +181,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if request.method not in ("GET", "HEAD", "OPTIONS") and not same_origin(request):
                 return JSONResponse({"detail": "invalid origin"}, status_code=403)
             claims = session_claims(request)
-            user = public_user({"email": claims["sub"], "access": claims["access"], "role": claims.get("role")}) if claims else None
+            session_user = await current_session_user(request, claims)
+            user = public_user(session_user) if session_user else None
+            request.state.validated_user = user
             if path not in ("/api/auth/login", "/api/auth/web-login", "/api/auth/captcha", "/api/auth/session", "/api/auth/logout") and not user:
                 return JSONResponse({"detail": "authentication required"}, status_code=401)
+            if user and user.get("role") == "admin":
+                if not (path.startswith("/api/auth/") or path == "/api/users" or path.startswith("/api/users/")):
+                    return JSONResponse({"detail": "forbidden"}, status_code=403)
+            if user and user.get("role") == "label_print":
+                if not path.startswith("/api/auth/") and not (
+                    request.method in ("GET", "HEAD") and path == "/api/labels"
+                ):
+                    return JSONResponse({"detail": "forbidden"}, status_code=403)
             if user and user.get("role") == "bc":
                 auth_path = path.startswith("/api/auth/")
                 read_only = request.method in ("GET", "HEAD") and (
@@ -205,7 +218,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 if claims["exp"] - time.time() < REFRESH_AFTER:
                     # Sliding refresh: sesi aktif tidak pernah kedaluwarsa;
                     # masa berlaku mutlak tetap 3 bulan per token.
-                    token, fresh = issue_session(settings, user)
+                    token, fresh = issue_session(settings, session_user)
                     app.state.revoked_jtis.add(claims["jti"])
                     response.set_cookie(COOKIE, token, max_age=SESSION_SECONDS, httponly=True,
                                         samesite="strict", secure=request.url.scheme == "https", path="/")
@@ -214,7 +227,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/auth/session")
     async def auth_session(request: Request):
-        user = identity(request)
+        user = request.state.validated_user
         return JSONResponse({"authenticated": user is not None, "user": user}, headers={"Cache-Control": "no-store"})
 
     @app.get("/api/auth/captcha")
@@ -223,8 +236,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(503, "Turnstile configuration incomplete")
         return JSONResponse({"site_key": settings.turnstile_site_key}, headers={"Cache-Control": "no-store"})
 
+    def limit_login(request: Request, body: Login) -> None:
+        # Uvicorn supplies the client address after trusted proxy processing.
+        ip = request.client.host if request.client else "unknown"
+        wait = login_limiter.retry_after(ip, body.email)
+        if wait:
+            raise HTTPException(
+                429, f"Terlalu banyak percobaan login. Coba lagi dalam {wait} detik.",
+                headers={"Retry-After": str(wait), "Cache-Control": "no-store"},
+            )
+
     @app.post("/api/auth/web-login")
     async def web_login(request: Request, body: WebLogin):
+        limit_login(request, body)
         if bool(settings.turnstile_site_key) != bool(settings.turnstile_secret_key):
             raise HTTPException(503, "Turnstile configuration incomplete")
         if settings.turnstile_secret_key:
@@ -242,15 +266,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 raise HTTPException(503, "Verifikasi Turnstile tidak tersedia.") from None
             if not isinstance(result, dict) or result.get("success") is not True or result.get("action") != "web_login":
                 raise HTTPException(422, "Verifikasi Turnstile gagal.")
-        return await login(request, body)
+        return await authenticate(request, body, web=True)
 
     @app.post("/api/auth/login")
     async def login(request: Request, body: Login):
+        limit_login(request, body)
+        return await authenticate(request, body, web=False)
+
+    async def authenticate(request: Request, body: Login, *, web: bool):
         if not settings.jwt_secret or len(settings.jwt_secret.encode()) < 32:
             return JSONResponse({"detail": "authentication unavailable"}, status_code=503)
         user = await app.state.auth_store.get(body.email.strip().lower())
-        if not user or not await asyncio.to_thread(verify_password, body.password, user["password_hash"]):
+        if not user or not user["active"] or not await asyncio.to_thread(verify_password, body.password, user["password_hash"]):
             return JSONResponse({"detail": "invalid credentials"}, status_code=401)
+        if not web and user.get("role") != "operator":
+            return JSONResponse({"detail": "Login mobile hanya untuk operator."}, status_code=403)
         token, _claims = issue_session(settings, user)
         response = JSONResponse({"authenticated": True, "user": public_user(user)}, headers={"Cache-Control": "no-store"})
         response.set_cookie(COOKIE, token, max_age=SESSION_SECONDS, httponly=True, samesite="strict", secure=request.url.scheme == "https", path="/")
@@ -265,6 +295,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         response.delete_cookie(COOKIE, path="/", httponly=True, samesite="strict", secure=request.url.scheme == "https")
         return response
 
+    from .users import router as users_router
+    app.include_router(users_router, prefix="/api")
     app.include_router(awb_router, prefix="/api")
     from .settings_router import router as settings_router
     app.include_router(settings_router, prefix="/api")
@@ -342,6 +374,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=404)
         page = re.sub(r"^(?:bgd|cas)/", "", full_path)
         user = identity(request)
+        if user and user.get("role") == "admin" and full_path != f"{user['access']}/users":
+            return RedirectResponse(f"/{user['access']}/users", headers={"Cache-Control": "no-store"})
+        if user and user.get("role") == "label_print" and full_path != f"{user['access']}/labels":
+            return RedirectResponse(f"/{user['access']}/labels", headers={"Cache-Control": "no-store"})
         if user and user.get("role") == "bc" and not re.fullmatch(r"dashboard|awb(?:/[0-9]+)?", page):
             return RedirectResponse(f"/{user['access']}/dashboard", headers={"Cache-Control": "no-store"})
         return FileResponse(index_file, headers={"Cache-Control": "no-cache"})

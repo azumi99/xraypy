@@ -20,7 +20,7 @@ import cv2
 from fastapi import APIRouter, WebSocket
 
 from ..live import live_resources
-from ..security import authorized, identity, require_operator_ws
+from ..security import authorized, current_session_user, identity, require_operator_ws, session_claims
 from ..warehouse import warehouse_context
 
 logger = logging.getLogger(__name__)
@@ -45,11 +45,18 @@ async def push_screen(ws: WebSocket, view: str) -> None:
     await ws.accept()
     mgr = live_resources(ws.app).source_mgr
     try:
+        next_account_check = asyncio.get_running_loop().time() + 5
         while True:
             data = await ws.receive_bytes()
             if not authorized(ws):
                 await ws.close(code=1008)
                 return
+            now = asyncio.get_running_loop().time()
+            if now >= next_account_check:
+                if not await current_session_user(ws, session_claims(ws)):
+                    await ws.close(code=1008)
+                    return
+                next_account_check = now + 5
             await asyncio.to_thread(mgr.push_screen, view, data)
     except Exception:  # noqa: BLE001 — client disconnect ends the loop
         pass
@@ -76,10 +83,17 @@ async def stream(ws: WebSocket) -> None:
             await ws.send_json({"type": "awb.waiting_live", "available": True})
         last_frame = 0.0
         had_preview = False
+        next_account_check = asyncio.get_running_loop().time() + 5
         while True:
             if not authorized(ws):
                 await ws.close(code=1008)
                 return
+            now = asyncio.get_running_loop().time()
+            if now >= next_account_check:
+                if not await current_session_user(ws, session_claims(ws)):
+                    await ws.close(code=1008)
+                    return
+                next_account_check = now + 5
             timeout = max(0.0, last_frame + FRAME_INTERVAL_S - asyncio.get_event_loop().time())
             try:
                 event = await asyncio.wait_for(queue.get(), timeout=timeout)

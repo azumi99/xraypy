@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
  * WebSocket stream: latest annotated frames (top + side POV), overlay states,
  * and realtime events (parcel.*, session.*, awb.*). Auto-reconnects.
  */
-export function useStream() {
+export function useStream(enabled = true) {
   const [frames, setFrames] = useState({ top: null, side: null });
   const [overlays, setOverlays] = useState([]);
   const [connected, setConnected] = useState(false);
@@ -13,6 +13,7 @@ export function useStream() {
   const listeners = useRef(new Set());
 
   useEffect(() => {
+    if (!enabled) return;
     let ws, timer, active = true;
     const connect = () => {
       const proto = location.protocol === "https:" ? "wss" : "ws";
@@ -47,7 +48,7 @@ export function useStream() {
       clearTimeout(timer);
       ws?.close();
     };
-  }, []);
+  }, [enabled]);
 
   const onEvent = useCallback((fn) => {
     listeners.current.add(fn);
