@@ -120,7 +120,7 @@ export default function AwbTab({ onChanged, onOpenDetail, onEvent, connected, wa
   return (
     <div className="data-workspace grid min-w-0 grid-cols-[minmax(0,1fr)] gap-3 w-full">
       <section className="panel awb-display-mode">
-        <div className="flex flex-wrap gap-2" role="group" aria-label="Display Mode">
+        <div className="flex flex-wrap justify-end gap-2" role="group" aria-label="Display Mode">
             <button type="button" className={grouped ? "btn-clay" : "btn-ghost"} aria-pressed={grouped} onClick={() => { setGrouped(true); setPage(1); }}>Grouping</button>
             <button type="button" className={!grouped ? "btn-clay" : "btn-ghost"} aria-pressed={!grouped} onClick={() => { setGrouped(false); setPage(1); }}>Non-Grouping</button>
         </div>
