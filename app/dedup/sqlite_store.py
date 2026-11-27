@@ -381,12 +381,15 @@ class SqliteStore(IdentityStore):
             return {"imported": inserted, "updated": updated, "skipped": updated}
         return await asyncio.to_thread(run)
 
-    async def delete_labels(self, ids):
+    async def delete_labels(self, ids, pjt_code=None):
         def run():
             with self._lock:
                 conn = self._connect()
                 with conn:
-                    return sum(conn.execute("DELETE FROM label_print WHERE id=?", (id_,)).rowcount for id_ in ids)
+                    return sum(conn.execute(
+                        "DELETE FROM label_print WHERE id=? AND (? IS NULL OR pjt_code=?)",
+                        (id_, pjt_code, pjt_code),
+                    ).rowcount for id_ in ids)
         return await asyncio.to_thread(run)
 
     # -- mapping ------------------------------------------------------------

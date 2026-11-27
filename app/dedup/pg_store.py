@@ -176,11 +176,14 @@ class PgVectorStore(IdentityStore):
                     updated += 1
         return {"imported": inserted, "updated": updated, "skipped": updated}
 
-    async def delete_labels(self, ids):
+    async def delete_labels(self, ids, pjt_code=None):
         assert self._pool is not None
         async with self._pool.acquire() as conn:
             conn = _WarehouseConnection(conn)
-            result = await conn.execute("DELETE FROM cv.label_print WHERE id = ANY($1::bigint[])", ids)
+            result = await conn.execute(
+                "DELETE FROM cv.label_print WHERE id = ANY($1::bigint[]) AND ($2::text IS NULL OR pjt_code=$2)",
+                ids, pjt_code,
+            )
         return int(result.split()[-1])
 
     # -- mapping -----------------------------------------------------------

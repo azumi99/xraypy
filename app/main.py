@@ -193,7 +193,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if user and user.get("role") == "label_print":
                 if not path.startswith("/api/auth/") and not (
                     (request.method in ("GET", "HEAD") and path in ("/api/labels", "/api/labels/template"))
-                    or (request.method == "POST" and path == "/api/labels/import" and request.state.label_pjt_code)
+                    or (request.method == "POST" and path in ("/api/labels/import", "/api/labels/delete-many")
+                        and request.state.label_pjt_code)
                 ):
                     return JSONResponse({"detail": "forbidden"}, status_code=403)
             if user and user.get("role") == "bc":

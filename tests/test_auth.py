@@ -278,6 +278,7 @@ def test_label_print_role_is_web_only_and_can_list_labels(client, warehouse, tmp
     email = credentials["email"]
     assert client.get("/api/labels").json() == []
     assert client.post("/api/labels/import").status_code == 403
+    assert client.post("/api/labels/delete-many", json={"ids": [1]}).status_code == 403
     assert asyncio.run(client.app.state.auth_store.update_user(
         email, warehouse, "label_print", True, None, "PJT-A"
     ))
@@ -325,7 +326,6 @@ def test_label_print_role_is_web_only_and_can_list_labels(client, warehouse, tmp
         all_labels = asyncio.run(label_store.list_labels())
     finally:
         warehouse_context.reset(token)
-        asyncio.run(label_store.close())
     assert {(row["pjt_code"], row["hawb"]) for row in all_labels if row["mawb"] == warehouse} == {
         ("PJT-A", "H1"), ("PJT-A", "H2"), ("PJT-A", "H3"), ("PJT-B", "H2"), (None, "H3"),
     }
@@ -333,7 +333,16 @@ def test_label_print_role_is_web_only_and_can_list_labels(client, warehouse, tmp
         (warehouse, "H1"), (warehouse, "H2"), (warehouse, "H3"), ("M1", "H1"), ("PJT-MAWB", "H1"),
     }
     assert client.get("/api/awb").status_code == 403
-    assert client.post("/api/labels/delete-many", json={"ids": [1]}).status_code == 403
+    own_id = next(row["id"] for row in result if row["mawb"] == "PJT-MAWB")
+    foreign_ids = {row["id"] for row in all_labels if row["pjt_code"] != "PJT-A"}
+    assert client.post("/api/labels/delete-many", json={"ids": [own_id, *foreign_ids]}).json() == {"deleted": 1}
+    assert own_id not in {row["id"] for row in client.get("/api/labels").json()}
+    token = warehouse_context.set(warehouse)
+    try:
+        assert foreign_ids <= {row["id"] for row in asyncio.run(label_store.list_labels())}
+    finally:
+        warehouse_context.reset(token)
+        asyncio.run(label_store.close())
     assert client.get("/dashboard", follow_redirects=False).headers["location"] == f"/{warehouse}/labels"
     with pytest.raises(WebSocketDisconnect):
         with client.websocket_connect("wss://testserver/ws/stream"):

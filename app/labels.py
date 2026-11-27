@@ -136,4 +136,10 @@ async def import_labels(request: Request, file: Annotated[UploadFile, File()],
 
 @router.post("/delete-many")
 async def delete_labels(body: DeleteLabels, request: Request):
-    return {"deleted": await request.app.state.store.delete_labels(body.ids)}
+    store = request.app.state.store
+    if (identity(request) or {}).get("role") == "label_print":
+        code = request.state.label_pjt_code
+        if not code:
+            raise HTTPException(403, "Akun belum memiliki kode PJT.")
+        return {"deleted": await store.delete_labels(body.ids, code)}
+    return {"deleted": await store.delete_labels(body.ids)}

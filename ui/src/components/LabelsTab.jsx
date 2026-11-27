@@ -76,6 +76,7 @@ export default function LabelsTab({ printOnly = false, accountPjtCode }) {
   const [selected, setSelected] = useState(new Set());
   const [page, setPage] = useState(1);
   const fileRef = useRef(null);
+  const canDelete = !printOnly || Boolean(accountPjtCode);
   const [importPjt, setImportPjt] = useState("");
   const [pjtCodes, setPjtCodes] = useState([]);
 
@@ -136,8 +137,8 @@ export default function LabelsTab({ printOnly = false, accountPjtCode }) {
     if (!items.length || !window.confirm(`Delete ${items.length} label(s)?`)) return;
     setBusy(true); setError(""); setMessage("");
     try {
-      await post("/labels/delete-many", { ids: items.map((row) => row.id) });
-      if (await load()) setMessage("Labels deleted.");
+      const { deleted } = await post("/labels/delete-many", { ids: items.map((row) => row.id) });
+      if (await load()) setMessage(`${deleted} label dihapus.`);
     } catch (e) { setError(`Delete failed: ${e.message}`); }
     finally { setBusy(false); }
   };
@@ -159,7 +160,7 @@ export default function LabelsTab({ printOnly = false, accountPjtCode }) {
     <button className="label-action label-action-print" onClick={() => print(items)}>
       <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M6 9V3h12v6M6 18H4V9h16v9h-2M6 14h12v7H6z" /><path d="M17 11h1" /></svg>Print
     </button>
-    {!printOnly && <button className="label-action label-action-delete" disabled={busy} onClick={() => remove(items)}>
+    {canDelete && <button className="label-action label-action-delete" disabled={busy} onClick={() => remove(items)}>
       <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5" /></svg>Delete
     </button>}
   </div>;
@@ -205,7 +206,7 @@ export default function LabelsTab({ printOnly = false, accountPjtCode }) {
           <button type="button" className="btn-ghost" disabled={!selectedRows.length} onClick={() => print(selectedRows)}>
             Print Selected ({selectedRows.length})
           </button>
-          {!printOnly && <button type="button" className="awb-delete" disabled={!selectedRows.length || busy} onClick={() => remove(selectedRows)}>
+          {canDelete && <button type="button" className="awb-delete" disabled={!selectedRows.length || busy} onClick={() => remove(selectedRows)}>
             Delete Selected
           </button>}
         </div>
