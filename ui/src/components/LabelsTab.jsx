@@ -75,8 +75,6 @@ export default function LabelsTab({ printOnly = false, accountPjtCode }) {
   const [page, setPage] = useState(1);
   const fileRef = useRef(null);
   const canDelete = !printOnly || Boolean(accountPjtCode);
-  const [importPjt, setImportPjt] = useState("");
-  const [pjtCodes, setPjtCodes] = useState([]);
 
   const showError = useCallback((message) => {
     setNotice({ title: "Print Label", message, error: true });
@@ -104,13 +102,6 @@ export default function LabelsTab({ printOnly = false, accountPjtCode }) {
     finally { setLoading(false); }
   };
   useEffect(() => { void load(); }, []);
-  useEffect(() => {
-    if (printOnly) return;
-    let active = true;
-    api("/labels/pjt-codes").then((codes) => { if (active) setPjtCodes(codes); })
-      .catch(() => { if (active) showError("Daftar PJT gagal dimuat."); });
-    return () => { active = false; };
-  }, [printOnly, showError]);
 
   const allGroups = new Map();
   for (const row of rows) {
@@ -151,7 +142,6 @@ export default function LabelsTab({ printOnly = false, accountPjtCode }) {
     setNotice(null);
     try {
       const body = new FormData(); body.append("file", file);
-      if (importPjt.trim()) body.append("pjt_code", importPjt.trim());
       const result = await api("/labels/import", { method: "POST", body });
       setNotice({
         title: "Impor Excel berhasil",
@@ -186,13 +176,6 @@ export default function LabelsTab({ printOnly = false, accountPjtCode }) {
         <div className="flex flex-wrap items-center gap-3">
           <input ref={fileRef} type="file" accept=".xlsx,.xls" className="hidden"
             onChange={(e) => { const file = e.target.files?.[0]; e.target.value = ""; if (file) void upload(file); }} />
-          {!printOnly && <label className="text-xs font-bold">Kode PJT (opsional)
-            <select className="field mt-1" value={importPjt} disabled={busy}
-              onChange={(event) => setImportPjt(event.target.value)}>
-              <option value="">Internal</option>
-              {pjtCodes.map((code) => <option key={code} value={code}>{code}</option>)}
-            </select>
-          </label>}
           <a className="btn-ghost" href="/api/labels/template">Download Template</a>
           <button type="button" className="btn-clay" disabled={busy || (printOnly && !accountPjtCode)} onClick={() => fileRef.current?.click()}>
             {busy ? "Processing..." : "Import Excel"}
