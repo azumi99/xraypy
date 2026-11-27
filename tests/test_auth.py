@@ -413,3 +413,57 @@ def test_login_ip_limit_blocks_multiple_accounts(client):
     blocked = client.post("/api/auth/web-login", json={"email": "bgd@paratekno.com", "password": "admin123"})
     assert blocked.status_code == 429
     assert int(blocked.headers["Retry-After"]) > 0
+
+
+def test_clearance_type_import_updates_only_the_current_warehouse(client, tmp_path):
+    from io import BytesIO
+
+    from openpyxl import Workbook, load_workbook
+
+    def workbook(rows):
+        output = BytesIO()
+        sheet = Workbook()
+        sheet.active.append(["mawb", "hawb", "clearance_type"])
+        for row in rows:
+            sheet.active.append(row)
+        sheet.save(output)
+        return {"file": ("clearance.xlsx", output.getvalue())}
+
+    def login(warehouse):
+        assert client.post("/api/auth/login", json={
+            "email": f"{warehouse}@paratekno.com", "password": "admin123",
+        }).status_code == 200
+
+    settings = client.app.state.settings
+    store = SqliteStore(settings, tmp_path / "clearance.sqlite")
+    asyncio.run(store.initialize())
+    client.app.state.store = store
+    path = "/api/clearance-types"
+    try:
+        assert client.get(path).status_code == 401
+        login("cas")
+        template = client.get(f"{path}/template")
+        assert template.status_code == 200
+        with BytesIO(template.content) as content:
+            header = load_workbook(content, read_only=True)
+            assert list(header.active.values) == [("mawb", "hawb", "clearance_type")]
+            header.close()
+        assert client.post(f"{path}/import", files=workbook([("M1", "H1", "A")])).json() == {"saved": 1}
+        login("bgd")
+        assert client.get(path).json() == []
+        assert client.post(f"{path}/import", files=workbook([("M1", "H1", "B")])).status_code == 200
+        assert client.post(f"{path}/import", files=workbook([("M1", "H1", "C")])).status_code == 200
+        assert client.post(f"{path}/import", files=workbook([("M2", "H2", "A"), ("M3", "H3", "")])).status_code == 400
+        assert client.get(path).json() == [{"mawb": "M1", "hawb": "H1", "clearance_type": "C"}]
+        login("cas")
+        assert client.get(path).json() == [{"mawb": "M1", "hawb": "H1", "clearance_type": "A"}]
+        assert asyncio.run(client.app.state.auth_store.create_user(
+            "clearance-pjt@example.com", "cas", "label_print", "test-clearance-password", "PJT-A",
+        ))
+        assert client.post("/api/auth/web-login", json={
+            "email": "clearance-pjt@example.com", "password": "test-clearance-password",
+        }).status_code == 200
+        assert client.get(path).status_code == 403
+        assert client.post(f"{path}/import", files=workbook([("M1", "H1", "D")])).status_code == 403
+    finally:
+        asyncio.run(store.close())

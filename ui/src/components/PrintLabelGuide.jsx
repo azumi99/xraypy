@@ -48,9 +48,7 @@ export default function PrintLabelGuide({ labelsPath }) {
         <li><strong>Headers and footers</strong> Off</li>
       </ul>
       <p>Pastikan preview menampilkan satu label per halaman dan seluruh QR serta barcode terlihat. Cetak satu label dan uji scan sebelum mencetak banyak.</p>
-      <p>Jika printer melewati stiker atau posisi cetak bergeser, periksa jenis media. Untuk roll bercelah, pilih <strong>Gap/Web</strong> jika tersedia, lalu ikuti panduan kalibrasi.</p>
-      <a className="underline" href="https://docs.zebra.com/us/en/printers/industrial/zt200-series-industrial-printer-user-guide/configuration/r-zt2x0-calibrating-the-ribbon-and-media-sensors/t-zt2x0-performing-manual-sensor-calibration.html"
-        target="_blank" rel="noreferrer">Panduan kalibrasi Zebra ZT230</a>
+      <p>Jika printer melewati stiker atau posisi cetak bergeser, periksa jenis media. Untuk roll bercelah, pilih <strong>Gap/Web</strong> jika tersedia.</p>
     </section>
   </article>;
 }

@@ -19,7 +19,7 @@ from pathlib import Path
 import numpy as np
 
 from ..config import Settings
-from ..warehouse import warehouse_sql
+from ..warehouse import current_warehouse, warehouse_sql
 from .shape_filter import ShapeFeatures
 from .store import (
     AwbRecord,
@@ -110,6 +110,11 @@ CREATE TABLE IF NOT EXISTS session (
     batch_id TEXT NOT NULL UNIQUE,
     started_at TEXT NOT NULL,
     stopped_at TEXT
+);
+CREATE TABLE IF NOT EXISTS clearance_type (
+    warehouse TEXT NOT NULL CHECK (warehouse IN ('cas', 'bgd')),
+    mawb TEXT NOT NULL, hawb TEXT NOT NULL, clearance_type TEXT NOT NULL,
+    PRIMARY KEY (warehouse, mawb, hawb)
 );
 CREATE TABLE IF NOT EXISTS label_print (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -335,6 +340,29 @@ class SqliteStore(IdentityStore):
                 ).fetchall()
                 return {row["ref"] for row in rows}
         return await asyncio.to_thread(run)
+
+    async def list_clearance_types(self):
+        def run():
+            with self._lock:
+                return [dict(row) for row in self._connect().execute(
+                    "SELECT mawb, hawb, clearance_type FROM clearance_type WHERE warehouse=? ORDER BY mawb, hawb",
+                    (current_warehouse(),),
+                )]
+        return await asyncio.to_thread(run)
+
+    async def import_clearance_types(self, rows):
+        def run():
+            warehouse = current_warehouse()
+            with self._lock:
+                conn = self._connect()
+                with conn:
+                    conn.executemany(
+                        """INSERT INTO clearance_type (warehouse, mawb, hawb, clearance_type)
+                           VALUES (?, ?, ?, ?)
+                           ON CONFLICT (warehouse, mawb, hawb) DO UPDATE SET clearance_type=excluded.clearance_type""",
+                        [(warehouse, *row) for row in rows],
+                    )
+        await asyncio.to_thread(run)
 
     async def list_labels(self, pjt_code=None):
         def run():

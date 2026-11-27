@@ -29,6 +29,7 @@ from .embedding.registry import create_embedder
 from .embedding.worker import EmbeddingWorker
 from .events import EventBus
 from .labels import router as labels_router
+from .clearance import router as clearance_router
 from .login_rate_limit import LoginRateLimiter
 from .manifest_tunnels import manifest_tunnels
 from .pipeline import Pipeline
@@ -336,6 +337,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allowed = await request.app.state.store.photo_references_existing(ref)
         return {"enabled": True, "items": await asyncio.to_thread(sync.status, site, allowed)}
     app.include_router(labels_router, prefix="/api")
+    app.include_router(clearance_router, prefix="/api")
     app.include_router(review_router, prefix="/api")
     from .photos import router as photos_router
 

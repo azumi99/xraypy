@@ -10,7 +10,7 @@ import asyncpg
 import numpy as np
 
 from ..config import Settings
-from ..warehouse import warehouse_sql
+from ..warehouse import current_warehouse, warehouse_sql
 from .shape_filter import ShapeFeatures
 from .store import (
     AwbRecord,
@@ -102,6 +102,23 @@ class PgVectorStore(IdentityStore):
     async def _runrow(self, query: str, *args):
         rows = await self._run(query, *args)
         return rows[0] if rows else None
+
+    async def list_clearance_types(self):
+        return [dict(row) for row in await self._run(
+            "SELECT mawb, hawb, clearance_type FROM cv.clearance_type WHERE warehouse=$1 ORDER BY mawb, hawb",
+            current_warehouse(),
+        )]
+
+    async def import_clearance_types(self, rows):
+        assert self._pool is not None
+        warehouse = current_warehouse()
+        async with self._pool.acquire() as conn, conn.transaction():
+            await conn.executemany(
+                """INSERT INTO cv.clearance_type (warehouse, mawb, hawb, clearance_type)
+                   VALUES ($1, $2, $3, $4)
+                   ON CONFLICT (warehouse, mawb, hawb) DO UPDATE SET clearance_type=excluded.clearance_type""",
+                [(warehouse, *row) for row in sorted(rows)],
+            )
 
     async def list_labels(self, pjt_code=None):
         if pjt_code is not None:

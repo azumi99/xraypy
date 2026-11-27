@@ -56,19 +56,19 @@ def _parse_rows(values) -> list[tuple]:
     return rows
 
 
-def parse_workbook(data: bytes) -> list[tuple]:
+def parse_workbook(data: bytes, parse_rows=_parse_rows) -> list[tuple]:
     try:
         if data.startswith(bytes.fromhex("d0cf11e0a1b11ae1")):
             workbook = xlrd.open_workbook(file_contents=data)
             try:
                 sheet = workbook.sheet_by_index(0)
-                return _parse_rows(iter(sheet.row_values(i) for i in range(sheet.nrows)))
+                return parse_rows(iter(sheet.row_values(i) for i in range(sheet.nrows)))
             finally:
                 workbook.release_resources()
         workbook = load_workbook(BytesIO(data), read_only=True, data_only=True)
         try:
             sheet = workbook.worksheets[0]
-            return _parse_rows(sheet.iter_rows(values_only=True))
+            return parse_rows(sheet.iter_rows(values_only=True))
         finally:
             workbook.close()
     except Exception as exc:

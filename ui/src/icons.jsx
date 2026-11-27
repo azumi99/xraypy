@@ -24,10 +24,12 @@ export const VideoIcon = () => (
   </svg>
 );
 
-export const TagIcon = () => (
-  <svg {...base}>
-    <path d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z" />
-    <circle cx="7.5" cy="7.5" r=".5" fill="currentColor" />
+export const QueueIcon = () => (
+  <svg {...base} aria-hidden="true">
+    <path d="M11 21H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v2" />
+    <path d="M13 3v5h5M8 11h5M8 15h2" />
+    <circle cx="17.5" cy="17.5" r="4.5" />
+    <path d="M17.5 15.5v2l1.25 1" />
   </svg>
 );
 
@@ -35,6 +37,13 @@ export const TableIcon = () => (
   <svg {...base} aria-hidden="true">
     <rect x="3" y="4" width="18" height="16" rx="2" />
     <path d="M3 9h18M3 14h18M10 9v11" />
+  </svg>
+);
+
+export const ClearanceIcon = () => (
+  <svg {...base} aria-hidden="true">
+    <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9zM13 2v7h7" />
+    <path d="m8 15 3 3 5-5" />
   </svg>
 );
 

@@ -4,8 +4,9 @@ import { useStream } from "./hooks/useStream";
 import LiveTab from "./components/LiveTab";
 import AwbTab from "./components/AwbTab";
 import MatrixTab from "./components/MatrixTab";
-import { BoxIcon, PrinterIcon, SettingsIcon, TableIcon, TagIcon, VideoIcon } from "./icons";
+import { BoxIcon, ClearanceIcon, PrinterIcon, QueueIcon, SettingsIcon, TableIcon, VideoIcon } from "./icons";
 import AwbDetailPage from "./components/AwbDetailPage";
+import ClearanceTypeTab from "./components/ClearanceTypeTab";
 import LabelsTab from "./components/LabelsTab";
 import PrintLabelGuide from "./components/PrintLabelGuide";
 import { warehousePath } from "./routes";
@@ -16,14 +17,15 @@ const Dashboard = lazy(() => import("./components/Dashboard"));
 const TABS = [
   { path: "/dashboard", label: "Dashboard", icon: <BoxIcon /> },
   { path: "/live", label: "Xray", icon: <VideoIcon /> },
-  { path: "/awb", label: "Queue AWB", icon: <TagIcon /> },
+  { path: "/awb", label: "Queue AWB", icon: <QueueIcon /> },
   { path: "/matrix", label: "Matrix", icon: <TableIcon /> },
   { path: "/labels", label: "Print Label", icon: <PrinterIcon /> },
+  { path: "/clearance-type", label: "Clearance Type", icon: <ClearanceIcon /> },
   { path: "/users", label: "Manajemen User", icon: <SettingsIcon /> },
   { path: "/settings", label: "Setting", icon: <SettingsIcon /> },
 ];
 
-const PAGE_TITLES = { "/dashboard": "Dashboard", "/live": "Xray", "/awb": "Queue AWB", "/matrix": "Matrix", "/labels": "Print Label", "/settings": "Setting", "/users": "Manajemen User" };
+const PAGE_TITLES = { "/dashboard": "Dashboard", "/live": "Xray", "/awb": "Queue AWB", "/matrix": "Matrix", "/labels": "Print Label", "/clearance-type": "Clearance Type", "/settings": "Setting", "/users": "Manajemen User" };
 
 /** Router ringan berbasis History API — URL ikut berubah ke /namahalaman. */
 export function usePathRoute() {
@@ -333,6 +335,7 @@ function AuthenticatedApp({ user, onLogout, logoutError, logoutPending }) {
           {activePath === "/labels" && (showingPrintGuide
             ? <PrintLabelGuide labelsPath={labelsPath} />
             : <LabelsTab printOnly={printOnly} accountPjtCode={user.pjt_code} guidePath={guidePath} />)}
+          {activePath === "/clearance-type" && <ClearanceTypeTab key={user.access} />}
           {admin && activePath === "/users" && <UsersTab />}
           {activePath === "/settings" && <SettingsTab warehouse={user.access} />}
           {awbDetailId && (
