@@ -4,13 +4,15 @@ from io import BytesIO
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 from openpyxl import load_workbook
 import xlrd
 from pydantic import BaseModel
 
-from .security import require_operator
+from .pjt import LabelOwnershipConflict, normalize_pjt_code
+from .security import identity, require_operator
+from .warehouse import current_warehouse
 
 router = APIRouter(prefix="/labels", tags=["labels"], dependencies=[Depends(require_operator)])
 
@@ -75,7 +77,16 @@ def parse_workbook(data: bytes) -> list[tuple]:
 
 @router.get("")
 async def list_labels(request: Request):
-    return await request.app.state.store.list_labels()
+    store = request.app.state.store
+    if (identity(request) or {}).get("role") == "label_print":
+        code = request.state.label_pjt_code
+        return await store.list_labels(code) if code else []
+    return await store.list_labels()
+
+
+@router.get("/pjt-codes")
+async def list_pjt_codes(request: Request):
+    return await request.app.state.auth_store.list_pjt_codes(current_warehouse())
 
 
 @router.get("/template")
@@ -88,14 +99,22 @@ async def download_template() -> FileResponse:
 
 
 @router.post("/import")
-async def import_labels(request: Request, file: Annotated[UploadFile, File()]):
+async def import_labels(request: Request, file: Annotated[UploadFile, File()],
+                        pjt_code: Annotated[str | None, Form()] = None):
     try:
+        code = normalize_pjt_code(pjt_code) if pjt_code else None
         rows = parse_workbook(await file.read())
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     finally:
         await file.close()
-    return await request.app.state.store.import_labels(rows)
+    if code and code not in await list_pjt_codes(request):
+        raise HTTPException(422, "Kode PJT belum terdaftar di warehouse ini.")
+    try:
+        store = request.app.state.store
+        return await store.import_labels(rows, code) if code else await store.import_labels(rows)
+    except LabelOwnershipConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 @router.post("/delete-many")

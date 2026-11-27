@@ -10,6 +10,7 @@ import asyncpg
 import numpy as np
 
 from ..config import Settings
+from ..pjt import LabelOwnershipConflict
 from ..warehouse import warehouse_sql
 from .shape_filter import ShapeFeatures
 from .store import (
@@ -103,7 +104,11 @@ class PgVectorStore(IdentityStore):
         rows = await self._run(query, *args)
         return rows[0] if rows else None
 
-    async def list_labels(self):
+    async def list_labels(self, pjt_code=None):
+        if pjt_code is not None:
+            return [dict(row) for row in await self._run(
+                "SELECT * FROM cv.label_print WHERE pjt_code=$1 ORDER BY created_at DESC, id DESC", pjt_code
+            )]
         return [dict(row) for row in await self._run("SELECT * FROM cv.label_print ORDER BY created_at DESC, id DESC")]
 
     async def photo_reference_exists(self, ref: str) -> bool:
@@ -152,20 +157,25 @@ class PgVectorStore(IdentityStore):
             "SELECT DISTINCT mawb FROM cv.label_print WHERE hawb=$1 ORDER BY mawb", hawb_number
         )]
 
-    async def import_labels(self, rows):
+    async def import_labels(self, rows, pjt_code=None):
         assert self._pool is not None
         inserted = updated = 0
         async with self._pool.acquire() as conn, conn.transaction():
             conn = _WarehouseConnection(conn)
             for row in rows:
-                created = await conn.fetchval("""INSERT INTO cv.label_print
-                    (mawb, pcs_mawb, hawb, pcs_hawb, part, airlines_name, flight_no, route)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                created = await conn.fetchval("""INSERT INTO cv.label_print AS existing_label
+                    (mawb, pcs_mawb, hawb, pcs_hawb, part, airlines_name, flight_no, route, pjt_code)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                     ON CONFLICT (mawb, hawb, part) DO UPDATE SET
                     pcs_mawb=excluded.pcs_mawb, pcs_hawb=excluded.pcs_hawb,
                     airlines_name=excluded.airlines_name, flight_no=excluded.flight_no,
-                    route=excluded.route, updated_at=now()
-                    RETURNING (xmax = 0)""", *row)
+                    route=excluded.route, updated_at=now(),
+                    pjt_code=COALESCE(existing_label.pjt_code, excluded.pjt_code)
+                    WHERE excluded.pjt_code IS NULL OR existing_label.pjt_code IS NULL
+                        OR existing_label.pjt_code = excluded.pjt_code
+                    RETURNING (xmax = 0)""", *row, pjt_code)
+                if created is None:
+                    raise LabelOwnershipConflict("Import dibatalkan karena ada label milik PJT lain.")
                 if created:
                     inserted += 1
                 else:

@@ -26,7 +26,10 @@ def issue_session(settings, user: dict) -> tuple[str, dict]:
         "sub": user["email"], "access": user["access"], "iat": now,
         "exp": now + SESSION_SECONDS, "jti": secrets.token_urlsafe(32),
     }
-    if user.get("role") in ("bc", "label_print", "admin"):
+    if user.get("role") == "pjt_label_print":
+        # Older backends compare the token role to the DB role literally.
+        claims["role"] = "label_print:pjt"
+    elif user.get("role") in ("bc", "label_print", "admin"):
         claims["role"] = user["role"]
     claims["ver"] = user.get("session_version", 0)
     return jwt.encode(claims, settings.jwt_secret, algorithm="HS256"), claims
@@ -56,7 +59,8 @@ async def current_session_user(connection, claims):
     user = await connection.app.state.auth_store.get(claims["sub"])
     if not user or not user["active"] or user["session_version"] != claims.get("ver", 0):
         return None
-    if user["access"] != claims["access"] or user["role"] != claims.get("role", "operator"):
+    expected_role = "label_print:pjt" if user["role"] == "pjt_label_print" else user["role"]
+    if user["access"] != claims["access"] or expected_role != claims.get("role", "operator"):
         return None
     return user
 
@@ -65,13 +69,14 @@ def identity(connection):
     claims = session_claims(connection)
     if claims is None:
         return None
-    return public_user({"email": claims["sub"], "access": claims["access"], "role": claims.get("role")})
+    return public_user({"email": claims["sub"], "access": claims["access"], "role": "pjt_label_print" if claims.get("role") == "label_print:pjt" else claims.get("role")})
 
 
 def public_user(user: dict) -> dict:
     result = {"email": user["email"], "access": user["access"]}
-    if user.get("role") in ("bc", "label_print", "admin"):
-        result["role"] = user["role"]
+    role = user.get("role")
+    if role in ("bc", "label_print", "pjt_label_print", "admin"):
+        result["role"] = "label_print" if role == "pjt_label_print" else role
     return result
 
 
@@ -86,7 +91,7 @@ def require_operator(request: Request) -> None:
 
 async def require_operator_ws(websocket: WebSocket) -> bool:
     user = await current_session_user(websocket, session_claims(websocket)) if same_origin(websocket) else None
-    if user and user["role"] not in ("label_print", "admin"):
+    if user and user["role"] not in ("label_print", "pjt_label_print", "admin"):
         return True
     await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="authentication required")
     return False

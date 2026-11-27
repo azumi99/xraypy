@@ -184,6 +184,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             session_user = await current_session_user(request, claims)
             user = public_user(session_user) if session_user else None
             request.state.validated_user = user
+            request.state.label_pjt_code = session_user.get("pjt_code") if session_user else None
             if path not in ("/api/auth/login", "/api/auth/web-login", "/api/auth/captcha", "/api/auth/session", "/api/auth/logout") and not user:
                 return JSONResponse({"detail": "authentication required"}, status_code=401)
             if user and user.get("role") == "admin":

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import api from "../api";
 
-const EMPTY_USER = { email: "", access: "cas", role: "operator", active: true, password: "" };
+const EMPTY_USER = { email: "", access: "cas", role: "operator", active: true, password: "", pjt_code: "" };
 const ROLE_LABELS = { admin: "Admin global", operator: "Operator", bc: "Bea Cukai", label_print: "Print Label" };
 
 export default function UsersTab() {
@@ -32,14 +32,15 @@ export default function UsersTab() {
     event.preventDefault();
     setBusy(true);
     setError("");
-    const { email, role, access, active, password } = draft;
+    const { email, role, access, active, password } = draft
+    const pjt_code = role === "label_print" ? draft.pjt_code : undefined;;
     try {
       const response = await fetch(editing ? `/api/users/${encodeURIComponent(email)}` : "/api/users", {
         method: editing ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(editing
-          ? { role, access, active, password: password || null }
-          : { email, role, access, password }),
+          ? { role, access, active, password: password || null, pjt_code }
+          : { email, role, access, password, pjt_code }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Periksa kembali data akun.");
@@ -77,6 +78,9 @@ export default function UsersTab() {
             onChange={(event) => setDraft({ ...draft, role: event.target.value })}>
             {["operator", "bc", "label_print"].map((role) => <option key={role} value={role}>{ROLE_LABELS[role]}</option>)}
           </select></label>
+          {draft.role === "label_print" && <label>Kode PJT<input className="field mt-1"
+            value={draft.pjt_code ?? ""} required maxLength={40}
+            onChange={(event) => setDraft({ ...draft, pjt_code: event.target.value.toUpperCase() })} /></label>}
         </div>
         {editing && <label className="flex items-center gap-2"><input type="checkbox" checked={draft.active}
           onChange={(event) => setDraft({ ...draft, active: event.target.checked })} /> Akun aktif</label>}
@@ -90,15 +94,15 @@ export default function UsersTab() {
       <div className="awb-table-scroll" role="region" aria-label="Daftar akun" tabIndex={0}>
         <table className="awb-data-table w-full">
           <thead><tr><th scope="col">Email</th><th scope="col">Warehouse</th><th scope="col">Role</th>
-            <th scope="col">Status</th><th scope="col">Aksi</th></tr></thead>
+            <th scope="col">PJT</th><th scope="col">Status</th><th scope="col">Aksi</th></tr></thead>
           <tbody>
             {users.map((user) => <tr key={user.email}>
               <td>{user.email}</td><td>{user.role === "admin" ? "CAS dan BGD" : user.access.toUpperCase()}</td>
-              <td>{ROLE_LABELS[user.role]}</td><td>{user.active ? "Aktif" : "Nonaktif"}</td>
+              <td>{ROLE_LABELS[user.role]}</td><td>{user.pjt_code || "—"}</td><td>{user.active ? "Aktif" : "Nonaktif"}</td>
               <td>{user.role !== "admin" && <button type="button" className="btn-ghost" disabled={busy}
                 onClick={() => open(user)}>Edit</button>}</td>
             </tr>)}
-            {!users.length && <tr><td colSpan={5}>{loading ? "Memuat akun…" : "Tidak ada akun untuk ditampilkan."}</td></tr>}
+            {!users.length && <tr><td colSpan={6}>{loading ? "Memuat akun…" : "Tidak ada akun untuk ditampilkan."}</td></tr>}
           </tbody>
         </table>
       </div>

@@ -8,6 +8,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from app.auth_store import AuthStore, hash_password, verify_password
 from app.config import DedupConfig, Settings
+from app.dedup.sqlite_store import SqliteStore
 from app.main import create_app
 
 
@@ -257,7 +258,7 @@ def test_bc_account_has_warehouse_scoped_read_only_access(client, warehouse):
 
 
 @pytest.mark.parametrize("warehouse", ["bgd", "cas"])
-def test_label_print_role_is_web_only_and_can_list_labels(client, warehouse):
+def test_label_print_role_is_web_only_and_can_list_labels(client, warehouse, tmp_path):
     settings = client.app.state.settings
     setattr(settings, f"label_print_{warehouse}_password", "test-label-password")
     store = AuthStore(settings, None)
@@ -268,12 +269,46 @@ def test_label_print_role_is_web_only_and_can_list_labels(client, warehouse):
     assert client.post("/api/auth/login", json=credentials).status_code == 403
     assert client.post("/api/auth/web-login", json=credentials).json()["user"]["role"] == "label_print"
 
-    async def list_labels():
-        from app.warehouse import current_warehouse
-        return [{"warehouse": current_warehouse()}]
+    label_store = SqliteStore(settings, tmp_path / "labels.sqlite")
+    asyncio.run(label_store.initialize())
+    client.app.state.store = label_store
+    from app.warehouse import warehouse_context
+    from tests.test_labels import workbook_bytes
 
-    client.app.state.store = SimpleNamespace(list_labels=list_labels)
-    assert client.get("/api/labels").json() == [{"warehouse": warehouse}]
+    email = credentials["email"]
+    assert client.get("/api/labels").json() == []
+    assert asyncio.run(client.app.state.auth_store.update_user(
+        email, warehouse, "label_print", True, None, "PJT-A"
+    ))
+    assert client.post("/api/auth/web-login", json=credentials).status_code == 200
+    for site in ("cas", "bgd"):
+        token = warehouse_context.set(site)
+        try:
+            asyncio.run(label_store.import_labels(
+                [(site, 1, "H1", 1, 1, "", "", "")], "PJT-A"
+            ))
+            asyncio.run(label_store.import_labels(
+                [(site, 1, "H2", 1, 1, "", "", "")], "PJT-B"
+            ))
+            asyncio.run(label_store.import_labels(
+                [(site, 1, "H3", 1, 1, "", "", "")]
+            ))
+        finally:
+            warehouse_context.reset(token)
+    operator = TestClient(client.app, base_url="https://testserver")
+    try:
+        assert operator.post("/api/auth/web-login", json={
+            "email": f"{warehouse}@paratekno.com", "password": settings.bootstrap_password,
+        }).status_code == 200
+        assert operator.get("/api/labels/pjt-codes").json() == ["PJT-A"]
+        files = {"file": ("labels.xlsx", workbook_bytes(pcs=1))}
+        assert operator.post("/api/labels/import", data={"pjt_code": "PJT-B"}, files=files).status_code == 422
+        assert operator.post("/api/labels/import", data={"pjt_code": "pjt-a"}, files=files).status_code == 200
+    finally:
+        operator.close()
+    result = client.get("/api/labels?pjt_code=PJT-B").json()
+    asyncio.run(label_store.close())
+    assert {(row["mawb"], row["hawb"]) for row in result} == {(warehouse, "H1"), ("M1", "H1")}
     assert client.get("/api/awb").status_code == 403
     assert client.post("/api/labels/import").status_code == 403
     assert client.post("/api/labels/delete-many", json={"ids": [1]}).status_code == 403
@@ -304,7 +339,8 @@ def test_global_admin_manages_users_and_invalidates_previous_sessions(client):
     operator = TestClient(client.app, base_url="https://testserver")
     assert operator.post("/api/auth/login", json={"email": email, "password": password}).status_code == 200
     assert operator.get("/api/users").status_code == 403
-    updated = {"role": "label_print", "access": "bgd", "active": True, "password": "updated-test-password"}
+    updated = {"role": "label_print", "access": "bgd", "active": True,
+               "password": "updated-test-password", "pjt_code": "PJT-A"}
     assert client.put(f"/api/users/{email}", json=updated).status_code == 200
     assert operator.get("/api/auth/session").json()["authenticated"] is False
     assert operator.post("/api/auth/login", json={"email": email, "password": password}).status_code == 401

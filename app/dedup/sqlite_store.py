@@ -19,6 +19,7 @@ from pathlib import Path
 import numpy as np
 
 from ..config import Settings
+from ..pjt import LabelOwnershipConflict
 from ..warehouse import warehouse_sql
 from .shape_filter import ShapeFeatures
 from .store import (
@@ -179,6 +180,10 @@ class SqliteStore(IdentityStore):
                         raw.execute(f"ALTER TABLE {table} ADD COLUMN label_photo_ref TEXT")
                     if "timecreated" not in cols:
                         raw.execute(f"ALTER TABLE {table} ADD COLUMN timecreated TEXT")
+                for table in ("label_print_bgd", "label_print_cas"):
+                    columns = {row[1] for row in raw.execute(f"PRAGMA table_info({table})")}
+                    if "pjt_code" not in columns:
+                        raw.execute(f"ALTER TABLE {table} ADD COLUMN pjt_code TEXT")
                 conn.commit()
                 foreign_keys = raw.execute("PRAGMA foreign_keys").fetchone()[0]
                 raw.execute("PRAGMA foreign_keys=OFF")
@@ -309,10 +314,15 @@ class SqliteStore(IdentityStore):
                 return {row["ref"] for row in rows}
         return await asyncio.to_thread(run)
 
-    async def list_labels(self):
+    async def list_labels(self, pjt_code=None):
         def run():
             with self._lock:
-                return [dict(row) for row in self._connect().execute("SELECT * FROM label_print ORDER BY created_at DESC, id DESC")]
+                conn = self._connect()
+                if pjt_code is not None:
+                    return [dict(row) for row in conn.execute(
+                        "SELECT * FROM label_print WHERE pjt_code=? ORDER BY created_at DESC, id DESC", (pjt_code,)
+                    )]
+                return [dict(row) for row in conn.execute("SELECT * FROM label_print ORDER BY created_at DESC, id DESC")]
         return await asyncio.to_thread(run)
 
     async def label_mawbs(self, hawb_number: str) -> list[str]:
@@ -323,7 +333,7 @@ class SqliteStore(IdentityStore):
                 )]
         return await asyncio.to_thread(run)
 
-    async def import_labels(self, rows):
+    async def import_labels(self, rows, pjt_code=None):
         def run():
             inserted = updated = 0
             with self._lock:
@@ -334,13 +344,18 @@ class SqliteStore(IdentityStore):
                             "SELECT 1 FROM label_print WHERE mawb=? AND hawb=? AND part=?",
                             (row[0], row[2], row[4]),
                         ).fetchone()
-                        conn.execute("""INSERT INTO label_print
-                            (mawb, pcs_mawb, hawb, pcs_hawb, part, airlines_name, flight_no, route)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        result = conn.execute("""INSERT INTO label_print AS existing_label
+                            (mawb, pcs_mawb, hawb, pcs_hawb, part, airlines_name, flight_no, route, pjt_code)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                             ON CONFLICT (mawb, hawb, part) DO UPDATE SET
                             pcs_mawb=excluded.pcs_mawb, pcs_hawb=excluded.pcs_hawb,
                             airlines_name=excluded.airlines_name, flight_no=excluded.flight_no,
-                            route=excluded.route, updated_at=CURRENT_TIMESTAMP""", row)
+                            route=excluded.route, updated_at=CURRENT_TIMESTAMP,
+                            pjt_code=COALESCE(existing_label.pjt_code, excluded.pjt_code)
+                            WHERE excluded.pjt_code IS NULL OR existing_label.pjt_code IS NULL
+                                OR existing_label.pjt_code = excluded.pjt_code""", (*row, pjt_code))
+                        if not result.rowcount:
+                            raise LabelOwnershipConflict("Import dibatalkan karena ada label milik PJT lain.")
                         if exists:
                             updated += 1
                         else:
