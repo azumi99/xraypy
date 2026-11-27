@@ -10,7 +10,6 @@ import asyncpg
 import numpy as np
 
 from ..config import Settings
-from ..pjt import LabelOwnershipConflict
 from ..warehouse import warehouse_sql
 from .shape_filter import ShapeFeatures
 from .store import (
@@ -157,25 +156,20 @@ class PgVectorStore(IdentityStore):
             "SELECT DISTINCT mawb FROM cv.label_print WHERE hawb=$1 ORDER BY mawb", hawb_number
         )]
 
-    async def import_labels(self, rows, pjt_code=None, *, claim_unassigned=True):
+    async def import_labels(self, rows, pjt_code=None):
         assert self._pool is not None
         inserted = updated = 0
         async with self._pool.acquire() as conn, conn.transaction():
             conn = _WarehouseConnection(conn)
             for row in rows:
-                created = await conn.fetchval("""INSERT INTO cv.label_print AS existing_label
+                created = await conn.fetchval("""INSERT INTO cv.label_print
                     (mawb, pcs_mawb, hawb, pcs_hawb, part, airlines_name, flight_no, route, pjt_code)
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-                    ON CONFLICT (mawb, hawb, part) DO UPDATE SET
+                    ON CONFLICT (mawb, hawb, part, COALESCE(pjt_code, '')) DO UPDATE SET
                     pcs_mawb=excluded.pcs_mawb, pcs_hawb=excluded.pcs_hawb,
                     airlines_name=excluded.airlines_name, flight_no=excluded.flight_no,
-                    route=excluded.route, updated_at=now(),
-                    pjt_code=COALESCE(existing_label.pjt_code, excluded.pjt_code)
-                    WHERE excluded.pjt_code IS NULL OR ($10 AND existing_label.pjt_code IS NULL)
-                        OR existing_label.pjt_code = excluded.pjt_code
-                    RETURNING (xmax = 0)""", *row, pjt_code, claim_unassigned)
-                if created is None:
-                    raise LabelOwnershipConflict("Import dibatalkan karena ada label di luar akses PJT.")
+                    route=excluded.route, updated_at=now()
+                    RETURNING (xmax = 0)""", *row, pjt_code)
                 if created:
                     inserted += 1
                 else:

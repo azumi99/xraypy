@@ -10,7 +10,7 @@ from openpyxl import Workbook, load_workbook
 import xlrd
 from pydantic import BaseModel
 
-from .pjt import LabelOwnershipConflict, normalize_pjt_code
+from .pjt import normalize_pjt_code
 from .security import identity, require_operator
 from .warehouse import current_warehouse
 
@@ -130,13 +130,8 @@ async def import_labels(request: Request, file: Annotated[UploadFile, File()],
         await file.close()
     if code and not print_only and code not in await list_pjt_codes(request):
         raise HTTPException(422, "Kode PJT belum terdaftar di warehouse ini.")
-    try:
-        store = request.app.state.store
-        if print_only:
-            return await store.import_labels(rows, code, claim_unassigned=False)
-        return await store.import_labels(rows, code) if code else await store.import_labels(rows)
-    except LabelOwnershipConflict as exc:
-        raise HTTPException(409, str(exc)) from exc
+    store = request.app.state.store
+    return await store.import_labels(rows, code) if code else await store.import_labels(rows)
 
 
 @router.post("/delete-many")

@@ -19,7 +19,6 @@ from pathlib import Path
 import numpy as np
 
 from ..config import Settings
-from ..pjt import LabelOwnershipConflict
 from ..warehouse import warehouse_sql
 from .shape_filter import ShapeFeatures
 from .store import (
@@ -185,6 +184,29 @@ class SqliteStore(IdentityStore):
                     if "pjt_code" not in columns:
                         raw.execute(f"ALTER TABLE {table} ADD COLUMN pjt_code TEXT")
                 conn.commit()
+                with raw:
+                    raw.execute("BEGIN IMMEDIATE")
+                    for table in ("label_print_bgd", "label_print_cas"):
+                        schema = raw.execute(
+                            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)
+                        ).fetchone()[0]
+                        updated_schema = re.sub(
+                            r",\s*UNIQUE\s*\(\s*mawb\s*,\s*hawb\s*,\s*part\s*\)",
+                            "", schema, flags=re.IGNORECASE,
+                        )
+                        if updated_schema != schema:
+                            sequence = raw.execute("SELECT seq FROM sqlite_sequence WHERE name=?", (table,)).fetchone()
+                            raw.execute(f"ALTER TABLE {table} RENAME TO {table}_previous")
+                            raw.execute(updated_schema)
+                            raw.execute(f"INSERT INTO {table} SELECT * FROM {table}_previous")
+                            raw.execute(f"DROP TABLE {table}_previous")
+                            if sequence:
+                                raw.execute("DELETE FROM sqlite_sequence WHERE name=?", (table,))
+                                raw.execute("INSERT INTO sqlite_sequence(name, seq) VALUES (?, ?)", (table, sequence[0]))
+                        raw.execute(
+                            f"CREATE UNIQUE INDEX IF NOT EXISTS {table}_pjt_unique "
+                            f"ON {table}(mawb, hawb, part, COALESCE(pjt_code, ''))"
+                        )
                 foreign_keys = raw.execute("PRAGMA foreign_keys").fetchone()[0]
                 raw.execute("PRAGMA foreign_keys=OFF")
                 try:
@@ -333,29 +355,25 @@ class SqliteStore(IdentityStore):
                 )]
         return await asyncio.to_thread(run)
 
-    async def import_labels(self, rows, pjt_code=None, *, claim_unassigned=True):
+    async def import_labels(self, rows, pjt_code=None):
         def run():
             inserted = updated = 0
             with self._lock:
                 conn = self._connect()
                 with conn:
+                    conn.execute("BEGIN IMMEDIATE")
                     for row in rows:
                         exists = conn.execute(
-                            "SELECT 1 FROM label_print WHERE mawb=? AND hawb=? AND part=?",
-                            (row[0], row[2], row[4]),
+                            "SELECT 1 FROM label_print WHERE mawb=? AND hawb=? AND part=? AND pjt_code IS ?",
+                            (row[0], row[2], row[4], pjt_code),
                         ).fetchone()
-                        result = conn.execute("""INSERT INTO label_print AS existing_label
+                        conn.execute("""INSERT INTO label_print
                             (mawb, pcs_mawb, hawb, pcs_hawb, part, airlines_name, flight_no, route, pjt_code)
                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            ON CONFLICT (mawb, hawb, part) DO UPDATE SET
+                            ON CONFLICT (mawb, hawb, part, COALESCE(pjt_code, '')) DO UPDATE SET
                             pcs_mawb=excluded.pcs_mawb, pcs_hawb=excluded.pcs_hawb,
                             airlines_name=excluded.airlines_name, flight_no=excluded.flight_no,
-                            route=excluded.route, updated_at=CURRENT_TIMESTAMP,
-                            pjt_code=COALESCE(existing_label.pjt_code, excluded.pjt_code)
-                            WHERE excluded.pjt_code IS NULL OR (? AND existing_label.pjt_code IS NULL)
-                                OR existing_label.pjt_code = excluded.pjt_code""", (*row, pjt_code, claim_unassigned))
-                        if not result.rowcount:
-                            raise LabelOwnershipConflict("Import dibatalkan karena ada label di luar akses PJT.")
+                            route=excluded.route, updated_at=CURRENT_TIMESTAMP""", (*row, pjt_code))
                         if exists:
                             updated += 1
                         else:

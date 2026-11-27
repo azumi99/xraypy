@@ -9,7 +9,6 @@ import pytest
 
 from app.db import MIGRATIONS_DIR, _active_dim, apply_migrations
 from app.dedup.pg_store import PgVectorStore
-from app.pjt import LabelOwnershipConflict
 from app.warehouse import warehouse_context
 
 
@@ -64,12 +63,14 @@ async def test_postgres_warehouse_migration_and_isolation(settings):
                 await conn.execute("UPDATE cv.awb_cas SET hawb_number='HOUSE' WHERE id=$1", new.id)
             row = ("M1", 1, "H1", 1, 1, None, None, None)
             await store.import_labels([row], "PJT-A")
-            with pytest.raises(LabelOwnershipConflict):
-                await store.import_labels([("M2", *row[1:]), row], "PJT-B")
+            assert (await store.import_labels([row], "PJT-B"))["imported"] == 1
+            assert (await store.import_labels([row], "PJT-B"))["updated"] == 1
+            assert (await store.import_labels([row]))["imported"] == 1
+            assert (await store.import_labels([row]))["updated"] == 1
             assert len(await store.list_labels("PJT-A")) == 1
-            assert await store.list_labels("PJT-B") == []
+            assert len(await store.list_labels("PJT-B")) == 1
             assert len(await store.list_awbs()) == 3
-            assert len(await store.list_labels()) == 1
+            assert len(await store.list_labels()) == 3
             assert await store.label_mawbs("H1") == ["M1"]
         finally:
             warehouse_context.reset(token)

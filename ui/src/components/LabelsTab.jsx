@@ -6,7 +6,7 @@ import api, { post } from "../api";
 import ExpandRowButton from "./ExpandRowButton";
 
 const emptyFilters = { mawb: "", hawb: "", airlines_name: "", flight_no: "" };
-const groupKey = (row) => JSON.stringify([row.mawb, row.hawb]);
+const groupKey = (row) => JSON.stringify([row.mawb, row.hawb, row.pjt_code ?? null]);
 const escapeHtml = (value) => String(value ?? "-").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
 const createdAtFormatter = new Intl.DateTimeFormat("id-ID", {

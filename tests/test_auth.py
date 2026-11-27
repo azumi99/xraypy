@@ -317,10 +317,21 @@ def test_label_print_role_is_web_only_and_can_list_labels(client, warehouse, tmp
     assert client.post("/api/labels/import", files=files).json()["imported"] == 1
     for hawb in ("H2", "H3"):
         files = {"file": ("labels.xlsx", workbook_bytes(pcs=1, mawb=warehouse, hawb=hawb))}
-        assert client.post("/api/labels/import", files=files).status_code == 409
+        assert client.post("/api/labels/import", files=files).json()["imported"] == 1
+        assert client.post("/api/labels/import", files=files).json()["updated"] == 1
     result = client.get("/api/labels?pjt_code=PJT-B").json()
-    asyncio.run(label_store.close())
-    assert {(row["mawb"], row["hawb"]) for row in result} == {(warehouse, "H1"), ("M1", "H1"), ("PJT-MAWB", "H1")}
+    token = warehouse_context.set(warehouse)
+    try:
+        all_labels = asyncio.run(label_store.list_labels())
+    finally:
+        warehouse_context.reset(token)
+        asyncio.run(label_store.close())
+    assert {(row["pjt_code"], row["hawb"]) for row in all_labels if row["mawb"] == warehouse} == {
+        ("PJT-A", "H1"), ("PJT-A", "H2"), ("PJT-A", "H3"), ("PJT-B", "H2"), (None, "H3"),
+    }
+    assert {(row["mawb"], row["hawb"]) for row in result} == {
+        (warehouse, "H1"), (warehouse, "H2"), (warehouse, "H3"), ("M1", "H1"), ("PJT-MAWB", "H1"),
+    }
     assert client.get("/api/awb").status_code == 403
     assert client.post("/api/labels/delete-many", json={"ids": [1]}).status_code == 403
     assert client.get("/dashboard", follow_redirects=False).headers["location"] == f"/{warehouse}/labels"
