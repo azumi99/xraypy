@@ -94,18 +94,19 @@ async def download_template(request: Request):
     if (identity(request) or {}).get("role") == "label_print":
         workbook = Workbook()
         workbook.active.append(["Mawb", "Pcs_mawb", "Hawb", "Pcs_hawb", "Airlines_name", "FlightNo", "Route"])
+        workbook.active.append(["273-07001551", 8, "WFCGK61108", 8, "Garuda Indonesia", "SZX", "SZX-CGK"])
         output = BytesIO()
         workbook.save(output)
         workbook.close()
         return Response(
             output.getvalue(),
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            headers={"Content-Disposition": 'attachment; filename="LABEL FEDEX.xlsx"'},
+            headers={"Content-Disposition": 'attachment; filename="LABEL XRAY CARGO.xlsx"'},
         )
     return FileResponse(
         Path(__file__).with_name("templates") / "LABEL FEDEX.xlsx",
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        filename="LABEL FEDEX.xlsx",
+        filename="LABEL XRAY CARGO.xlsx",
     )
 
 

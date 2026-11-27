@@ -312,7 +312,10 @@ def test_label_print_role_is_web_only_and_can_list_labels(client, warehouse, tmp
     template = client.get("/api/labels/template")
     assert template.status_code == 200
     from app.labels import parse_workbook
-    assert parse_workbook(template.content) == []
+    assert parse_workbook(template.content) == [
+        ("273-07001551", 8, "WFCGK61108", 8, part, "Garuda Indonesia", "SZX", "SZX-CGK")
+        for part in range(1, 9)
+    ]
     files = {"file": ("labels.xlsx", workbook_bytes(pcs=1, mawb="PJT-MAWB"))}
     assert client.post("/api/labels/import", data={"pjt_code": "PJT-B"}, files=files).status_code == 403
     assert client.post("/api/labels/import", files=files).json()["imported"] == 1
