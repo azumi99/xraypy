@@ -163,7 +163,10 @@ export default function App() {
   if (!auth) return (
     <main className="min-h-screen grid place-items-center p-4">
       <form onSubmit={login} className="panel w-full max-w-sm flex flex-col gap-4">
-        <h1 className="text-muted text-xs font-bold uppercase tracking-wider">Xray Cargo</h1>
+        <div>
+          <div className="text-muted text-xs font-bold uppercase tracking-wider">Xray Cargo</div>
+          <h1 className="text-2xl font-extrabold mt-2">Login akses</h1>
+        </div>
         <label htmlFor="email" className="text-sm font-bold">Email</label>
         <input id="email" type="email" autoComplete="username" required value={email} onChange={(e) => setEmail(e.target.value)} className="w-full rounded-xl border-2 border-[var(--border)] bg-[var(--bg-cream)] px-3 py-3 text-[var(--text)] focus:outline-2 focus:outline-[var(--cta)]" />
         <label htmlFor="password" className="text-sm font-bold">Password</label>
