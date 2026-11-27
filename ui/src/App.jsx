@@ -163,7 +163,7 @@ export default function App() {
   if (!auth) return (
     <main className="min-h-screen grid place-items-center p-4">
       <form onSubmit={login} className="panel w-full max-w-sm flex flex-col gap-4">
-        <div><div className="text-muted text-xs font-bold uppercase tracking-wider">Xray Cargo</div><h1 className="text-2xl font-extrabold mt-2">Login operator</h1></div>
+        <h1 className="text-muted text-xs font-bold uppercase tracking-wider">Xray Cargo</h1>
         <label htmlFor="email" className="text-sm font-bold">Email</label>
         <input id="email" type="email" autoComplete="username" required value={email} onChange={(e) => setEmail(e.target.value)} className="w-full rounded-xl border-2 border-[var(--border)] bg-[var(--bg-cream)] px-3 py-3 text-[var(--text)] focus:outline-2 focus:outline-[var(--cta)]" />
         <label htmlFor="password" className="text-sm font-bold">Password</label>
@@ -272,6 +272,7 @@ function AuthenticatedApp({ user, onLogout, logoutError, logoutPending }) {
         <div className="sidebar-footer md:mt-auto">
           <div className="sidebar-account">
             <div className="sidebar-account-heading"><span>{admin ? "ADMIN GLOBAL" : printOnly ? "PRINT LABEL" : readOnly ? "BEA CUKAI" : "AKUN OPERATOR"}</span><span className="sidebar-warehouse">{admin ? "CAS / BGD" : user.access.toUpperCase()}</span></div>
+            {printOnly && user.pjt_code && <span className="sidebar-email">Kode PJT {user.pjt_code}</span>}
             <span className="sidebar-email">{user.email}</span>
             <button type="button" className="sidebar-logout" onClick={onLogout} disabled={logoutPending}>{logoutPending ? "Memuat..." : "Logout"}</button>
             {logoutError && <p role="alert" className="text-sm text-red-400">{logoutError}</p>}

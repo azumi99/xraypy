@@ -77,6 +77,8 @@ def public_user(user: dict) -> dict:
     role = user.get("role")
     if role in ("bc", "label_print", "pjt_label_print", "admin"):
         result["role"] = "label_print" if role == "pjt_label_print" else role
+    if role == "pjt_label_print" and user.get("pjt_code"):
+        result["pjt_code"] = user["pjt_code"]
     return result
 
 

@@ -280,7 +280,8 @@ def test_label_print_role_is_web_only_and_can_list_labels(client, warehouse, tmp
     assert asyncio.run(client.app.state.auth_store.update_user(
         email, warehouse, "label_print", True, None, "PJT-A"
     ))
-    assert client.post("/api/auth/web-login", json=credentials).status_code == 200
+    assert client.post("/api/auth/web-login", json=credentials).json()["user"]["pjt_code"] == "PJT-A"
+    assert client.get("/api/auth/session").json()["user"]["pjt_code"] == "PJT-A"
     for site in ("cas", "bgd"):
         token = warehouse_context.set(site)
         try:
