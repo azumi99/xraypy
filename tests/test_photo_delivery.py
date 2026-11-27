@@ -3,6 +3,7 @@ import json
 from types import SimpleNamespace
 
 import httpx
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -10,6 +11,35 @@ from app.photo_delivery import router
 from app.photo_receiver import router as receiver
 from app.security import issue_session
 from tests.test_photo_receiver import Store, image
+
+
+@pytest.mark.parametrize("windows", [False, True])
+def test_obs_delivery_uses_only_obs_even_with_a_local_copy(tmp_path, monkeypatch, windows):
+    monkeypatch.setattr("app.photo_delivery._WINDOWS", windows)
+    app = FastAPI()
+    app.include_router(router)
+    app.state.settings = SimpleNamespace(crop_dir=tmp_path, jwt_secret="s" * 32)
+    app.state.store = Store()
+    remote_image = image("blue")
+    objects = {"bgd/crops/batch/a.png": remote_image}
+
+    def read(key):
+        if key not in objects:
+            raise FileNotFoundError(key)
+        return objects[key]
+
+    app.state.photo_sync = SimpleNamespace(enabled=False, obs=SimpleNamespace(read=read))
+    (tmp_path / "batch").mkdir()
+    (tmp_path / "batch/a.png").write_bytes(image("red"))
+    jwt, _ = issue_session(app.state.settings, {"email": "x", "access": "bgd"})
+    with TestClient(app) as client:
+        client.cookies.set("cv_session", jwt)
+        url = "/api/sync/photo?ref=batch/a.png"
+        response = client.get(url)
+        assert response.status_code == 200
+        assert response.content == remote_image
+        objects.clear()
+        assert client.get(url).status_code == 404
 
 
 def test_delivery_and_receiver(tmp_path, monkeypatch):

@@ -1,4 +1,4 @@
-"""Authenticated, local-first delivery of database-referenced photos."""
+"""Authenticated delivery of database-referenced photos."""
 
 import asyncio
 import hashlib
@@ -67,6 +67,13 @@ async def deliver_photo(request: Request, ref: str):
         warehouse_context.reset(token)
     if not exists:
         raise HTTPException(404, "Photo not found")
+    sync = getattr(request.app.state, "photo_sync", None)
+    if getattr(sync, "obs", None) is not None:
+        try:
+            data = await asyncio.wait_for(_remote(sync, site, ref), timeout=15)
+        except TimeoutError:
+            raise HTTPException(503, "Photo source unavailable") from None
+        return _image_response(data)
     if _WINDOWS:
         # Windows: local-first with resolve-based path guard; remote fallback
         # works identically via PhotoSync when enabled.
@@ -74,8 +81,7 @@ async def deliver_photo(request: Request, ref: str):
         path = (root / ref).resolve()
         if path.is_relative_to(root) and not path.is_symlink() and path.is_file():
             return FileResponse(path, headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
-        sync = request.app.state.photo_sync
-        if sync.enabled or getattr(sync, "obs", None) is not None:
+        if sync is not None and sync.enabled:
             try:
                 data = await asyncio.wait_for(_remote(sync, site, ref), timeout=15)
             except (httpx.HTTPError, TimeoutError, KeyError):
@@ -87,8 +93,7 @@ async def deliver_photo(request: Request, ref: str):
     try:
         data = await asyncio.to_thread(read_photo, request.app.state.settings.crop_dir, site, ref)
     except FileNotFoundError:
-        sync = request.app.state.photo_sync
-        if not sync.enabled and getattr(sync, "obs", None) is None:
+        if sync is None or not sync.enabled:
             raise HTTPException(404, "Photo not found") from None
         try:
             data = await asyncio.wait_for(_remote(sync, site, ref), timeout=15)
@@ -96,6 +101,10 @@ async def deliver_photo(request: Request, ref: str):
             raise HTTPException(503, "Photo source unavailable") from None
     except (OSError, ValueError):
         raise HTTPException(404, "Photo not found") from None
+    return _image_response(data)
+
+
+def _image_response(data: bytes) -> Response:
     try:
         mime = photo_mime(data)
     except (OSError, ValueError, UnidentifiedImageError):
