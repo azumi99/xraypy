@@ -62,7 +62,7 @@ async function printLabels(rows, parts, setError) {
   }
 }
 
-export default function LabelsTab({ printOnly = false, accountPjtCode }) {
+export default function LabelsTab({ printOnly = false, accountPjtCode, guidePath }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -176,6 +176,7 @@ export default function LabelsTab({ printOnly = false, accountPjtCode }) {
         <div className="flex flex-wrap items-center gap-3">
           <input ref={fileRef} type="file" accept=".xlsx,.xls" className="hidden"
             onChange={(e) => { const file = e.target.files?.[0]; e.target.value = ""; if (file) void upload(file); }} />
+          <a className="btn-ghost" href={guidePath}>Panduan Cetak</a>
           <a className="btn-ghost" href="/api/labels/template">Download Template</a>
           <button type="button" className="btn-clay" disabled={busy || (printOnly && !accountPjtCode)} onClick={() => fileRef.current?.click()}>
             {busy ? "Processing..." : "Import Excel"}

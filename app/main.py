@@ -379,7 +379,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         user = identity(request)
         if user and user.get("role") == "admin" and full_path != f"{user['access']}/users":
             return RedirectResponse(f"/{user['access']}/users", headers={"Cache-Control": "no-store"})
-        if user and user.get("role") == "label_print" and full_path != f"{user['access']}/labels":
+        if user and user.get("role") == "label_print" and full_path not in (
+            f"{user['access']}/labels", f"{user['access']}/labels/guide",
+        ):
             return RedirectResponse(f"/{user['access']}/labels", headers={"Cache-Control": "no-store"})
         if user and user.get("role") == "bc" and not re.fullmatch(r"dashboard|awb(?:/[0-9]+)?", page):
             return RedirectResponse(f"/{user['access']}/dashboard", headers={"Cache-Control": "no-store"})

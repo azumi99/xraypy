@@ -7,6 +7,7 @@ import MatrixTab from "./components/MatrixTab";
 import { BoxIcon, PrinterIcon, SettingsIcon, TableIcon, TagIcon, VideoIcon } from "./icons";
 import AwbDetailPage from "./components/AwbDetailPage";
 import LabelsTab from "./components/LabelsTab";
+import PrintLabelGuide from "./components/PrintLabelGuide";
 import { warehousePath } from "./routes";
 import SettingsTab from "./components/SettingsTab";
 import UsersTab from "./components/UsersTab";
@@ -198,10 +199,13 @@ function AuthenticatedApp({ user, onLogout, logoutError, logoutPending }) {
   const admin = user.role === "admin";
   const printOnly = user.role === "label_print";
   const requestedPath = warehousePath(currentPath, user.access);
-  const canonicalPath = admin ? warehousePath("/users", user.access) : printOnly ? warehousePath("/labels", user.access) : readOnly && !/^\/(?:dashboard|awb(?:\/\d+)?)$/.test(requestedPath.slice(user.access.length + 1))
+  const labelsPath = warehousePath("/labels", user.access);
+  const guidePath = `${labelsPath}/guide`;
+  const canonicalPath = admin ? warehousePath("/users", user.access) : printOnly ? (requestedPath === guidePath ? guidePath : labelsPath) : readOnly && !/^\/(?:dashboard|awb(?:\/\d+)?)$/.test(requestedPath.slice(user.access.length + 1))
     ? warehousePath("/dashboard", user.access)
     : requestedPath === warehousePath("/users", user.access) ? warehousePath("/dashboard", user.access) : requestedPath;
   const path = canonicalPath.slice(user.access.length + 1);
+  const showingPrintGuide = path === "/labels/guide";
   const navigate = (to) => navigateRoute(`/${user.access}${to}`);
   useEffect(() => {
     if (canonicalPath !== currentPath) {
@@ -309,7 +313,7 @@ function AuthenticatedApp({ user, onLogout, logoutError, logoutPending }) {
               <>
                 <div className="text-muted text-xs font-bold uppercase tracking-[0.08em]">Xray Cargo</div>
                 <h2 className="m-0 text-[21px] font-extrabold tracking-tight">
-                  {PAGE_TITLES[activePath] ?? 'Xray Cargo'}
+                  {showingPrintGuide ? "Panduan Cetak Label" : PAGE_TITLES[activePath] ?? 'Xray Cargo'}
                 </h2>
               </>
             )}
@@ -326,7 +330,9 @@ function AuthenticatedApp({ user, onLogout, logoutError, logoutPending }) {
             <AwbTab warehouse={user.access} readOnly={readOnly} onChanged={refreshSession} onOpenDetail={(id) => navigate(`/awb/${id}`)} onEvent={onEvent} connected={connected} />
           )}
           {activePath === "/matrix" && <MatrixTab key={user.access} onEvent={onEvent} connected={connected} />}
-          {activePath === "/labels" && <LabelsTab printOnly={printOnly} accountPjtCode={user.pjt_code} />}
+          {activePath === "/labels" && (showingPrintGuide
+            ? <PrintLabelGuide labelsPath={labelsPath} />
+            : <LabelsTab printOnly={printOnly} accountPjtCode={user.pjt_code} guidePath={guidePath} />)}
           {admin && activePath === "/users" && <UsersTab />}
           {activePath === "/settings" && <SettingsTab warehouse={user.access} />}
           {awbDetailId && (

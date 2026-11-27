@@ -347,6 +347,7 @@ def test_label_print_role_is_web_only_and_can_list_labels(client, warehouse, tmp
         warehouse_context.reset(token)
         asyncio.run(label_store.close())
     assert client.get("/dashboard", follow_redirects=False).headers["location"] == f"/{warehouse}/labels"
+    assert client.get(f"/{warehouse}/labels/guide", follow_redirects=False).status_code == 200
     with pytest.raises(WebSocketDisconnect):
         with client.websocket_connect("wss://testserver/ws/stream"):
             pass
