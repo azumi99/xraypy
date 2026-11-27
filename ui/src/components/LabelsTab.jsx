@@ -66,9 +66,7 @@ export default function LabelsTab({ printOnly = false, accountPjtCode }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const [message, setMessage] = useState("");
-  const [importNotice, setImportNotice] = useState(null);
+  const [notice, setNotice] = useState(null);
   const [filters, setFilters] = useState(emptyFilters);
   const [applied, setApplied] = useState(emptyFilters);
   const [grouped, setGrouped] = useState(true);
@@ -79,6 +77,13 @@ export default function LabelsTab({ printOnly = false, accountPjtCode }) {
   const canDelete = !printOnly || Boolean(accountPjtCode);
   const [importPjt, setImportPjt] = useState("");
   const [pjtCodes, setPjtCodes] = useState([]);
+
+  const showError = useCallback((message) => {
+    setNotice({ title: "Print Label", message, error: true });
+  }, []);
+  const closeNotice = useCallback(() => {
+    setNotice((current) => current === notice ? null : current);
+  }, [notice]);
 
   const load = async () => {
     setLoading(true);
@@ -95,9 +100,7 @@ export default function LabelsTab({ printOnly = false, accountPjtCode }) {
       });
       setRows(sorted);
       setSelected((old) => new Set(items.filter((row) => old.has(row.id)).map((row) => row.id)));
-      setError("");
-      return true;
-    } catch (e) { setError(`Could not load labels: ${e.message}`); return false; }
+    } catch (e) { showError(`Daftar label gagal dimuat: ${e.message}`); }
     finally { setLoading(false); }
   };
   useEffect(() => { void load(); }, []);
@@ -105,10 +108,9 @@ export default function LabelsTab({ printOnly = false, accountPjtCode }) {
     if (printOnly) return;
     let active = true;
     api("/labels/pjt-codes").then((codes) => { if (active) setPjtCodes(codes); })
-      .catch(() => { if (active) setError("Daftar PJT gagal dimuat."); });
+      .catch(() => { if (active) showError("Daftar PJT gagal dimuat."); });
     return () => { active = false; };
-  }, [printOnly]);
-  const closeImportNotice = useCallback(() => setImportNotice(null), []);
+  }, [printOnly, showError]);
 
   const allGroups = new Map();
   for (const row of rows) {
@@ -132,26 +134,31 @@ export default function LabelsTab({ printOnly = false, accountPjtCode }) {
   const currentPage = Math.min(page, pages);
   const visible = entries.slice((currentPage - 1) * 20, currentPage * 20);
   const toggle = (id) => setSelected((old) => { const next = new Set(old); if (next.has(id)) next.delete(id); else next.add(id); return next; });
-  const print = (items) => { setError(""); void printLabels(items, parts, setError); };
+  const print = (items) => { setNotice(null); void printLabels(items, parts, showError); };
   const remove = async (items) => {
     if (!items.length || !window.confirm(`Delete ${items.length} label(s)?`)) return;
-    setBusy(true); setError(""); setMessage("");
+    setBusy(true);
+    setNotice(null);
     try {
       const { deleted } = await post("/labels/delete-many", { ids: items.map((row) => row.id) });
-      if (await load()) setMessage(`${deleted} label dihapus.`);
-    } catch (e) { setError(`Delete failed: ${e.message}`); }
+      setNotice({ title: "Hapus label berhasil", message: `${deleted} label dihapus.` });
+      await load();
+    } catch (e) { showError(`Label gagal dihapus: ${e.message}`); }
     finally { setBusy(false); }
   };
   const upload = async (file) => {
-    setImportNotice(null);
-    setBusy(true); setError(""); setMessage("");
+    setBusy(true);
+    setNotice(null);
     try {
       const body = new FormData(); body.append("file", file);
       if (importPjt.trim()) body.append("pjt_code", importPjt.trim());
       const result = await api("/labels/import", { method: "POST", body });
-      setImportNotice(result);
+      setNotice({
+        title: "Impor Excel berhasil",
+        message: `${result.imported ?? 0} ditambahkan · ${result.updated ?? 0} diperbarui · ${result.skipped ?? 0} dilewati`,
+      });
       await load();
-    } catch (e) { setError(`Import failed: ${e.message}`); }
+    } catch (e) { showError(`Impor Excel gagal: ${e.message}`); }
     finally { setBusy(false); }
   };
   const selectedRows = rows.filter((row) => selected.has(row.id));
@@ -167,8 +174,8 @@ export default function LabelsTab({ printOnly = false, accountPjtCode }) {
   const individual = (row) => <tr key={row.id}><td><input type="checkbox" aria-label={`Select label ${row.id}`} checked={selected.has(row.id)} onChange={() => toggle(row.id)} /></td>{rowCells(row)}<td>{actions([row])}</td></tr>;
 
   return <div className="data-workspace label-workspace grid min-w-0 grid-cols-[minmax(0,1fr)] gap-3">
-    {importNotice && <SuccessToast title="Impor Excel berhasil" onClose={closeImportNotice}>
-      {importNotice.imported ?? 0} ditambahkan · {importNotice.updated ?? 0} diperbarui · {importNotice.skipped ?? 0} dilewati
+    {notice && <SuccessToast title={notice.title} onClose={closeNotice} error={notice.error}>
+      {notice.message}
     </SuccessToast>}
     <section className="panel">
       <div className="awb-section-heading">
@@ -192,7 +199,6 @@ export default function LabelsTab({ printOnly = false, accountPjtCode }) {
           </button>
         </div>
       </div>
-      {error && <p role="alert" className="text-red-400 text-sm mt-4">{error}</p>}{message && <p role="status" className="st-saved text-sm mt-4">{message}</p>}
     </section>
     <section className="panel"><div className="flex flex-wrap items-center justify-between gap-3"><h3>Display Mode</h3><div className="flex flex-wrap gap-2"><button className={grouped ? "btn-clay" : "btn-ghost"} aria-pressed={grouped} onClick={() => { setGrouped(true); setPage(1); }}>Grouping</button><button className={!grouped ? "btn-clay" : "btn-ghost"} aria-pressed={!grouped} onClick={() => { setGrouped(false); setPage(1); }}>Non-Grouping</button></div></div>
       <form onSubmit={(e) => { e.preventDefault(); setApplied(filters); setPage(1); }}><div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mt-4">{[["mawb", "MAWB"], ["hawb", "HAWB"], ["airlines_name", "Airlines"], ["flight_no", "Flight"]].map(([key, label]) => <label key={key} className="text-xs font-bold">{label}<input className="field mt-1" list={`label-filter-${key}`} value={filters[key]} onChange={(e) => setFilters({ ...filters, [key]: e.target.value })} /><datalist id={`label-filter-${key}`}>{[...new Set(rows.map((row) => row[key]).filter(Boolean))].sort().map((value) => <option key={value} value={value} />)}</datalist></label>)}</div><div className="flex gap-3 mt-4"><button className="btn-clay" type="submit">Apply Filters</button><button className="btn-ghost" type="button" onClick={() => { setFilters(emptyFilters); setApplied(emptyFilters); setPage(1); }}>Reset</button></div></form>

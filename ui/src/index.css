@@ -571,6 +571,7 @@
   animation: success-toast-enter 220ms ease-out;
 }
 
+.success-toast.toast-error { @apply border-s-bad; }
 .success-toast p { margin-top: 4px; color: var(--text-muted); font-size: 12px; }
 .success-toast button { flex: none; width: 32px; height: 32px; border-radius: 6px; font-size: 22px; line-height: 1; }
 .success-toast button:hover { background: var(--secondary); }
