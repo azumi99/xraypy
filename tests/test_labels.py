@@ -11,11 +11,11 @@ from app.security import require_operator
 from app.dedup.sqlite_store import SqliteStore, _SCHEMA
 
 
-def workbook_bytes(pcs=2, route="CGK-SIN"):
+def workbook_bytes(pcs=2, route="CGK-SIN", *, mawb="M1", hawb="H1"):
     workbook = Workbook()
     sheet = workbook.active
     sheet.append([" HAWB ", "MAWB", "PCS_HAWB", "FlightNo", "route"])
-    sheet.append(["H1", "M1", pcs, "FX1", route])
+    sheet.append([hawb, mawb, pcs, "FX1", route])
     output = BytesIO()
     workbook.save(output)
     return output.getvalue()

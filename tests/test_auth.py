@@ -277,6 +277,7 @@ def test_label_print_role_is_web_only_and_can_list_labels(client, warehouse, tmp
 
     email = credentials["email"]
     assert client.get("/api/labels").json() == []
+    assert client.post("/api/labels/import").status_code == 403
     assert asyncio.run(client.app.state.auth_store.update_user(
         email, warehouse, "label_print", True, None, "PJT-A"
     ))
@@ -307,11 +308,20 @@ def test_label_print_role_is_web_only_and_can_list_labels(client, warehouse, tmp
         assert operator.post("/api/labels/import", data={"pjt_code": "pjt-a"}, files=files).status_code == 200
     finally:
         operator.close()
+    template = client.get("/api/labels/template")
+    assert template.status_code == 200
+    from app.labels import parse_workbook
+    assert parse_workbook(template.content) == []
+    files = {"file": ("labels.xlsx", workbook_bytes(pcs=1, mawb="PJT-MAWB"))}
+    assert client.post("/api/labels/import", data={"pjt_code": "PJT-B"}, files=files).status_code == 403
+    assert client.post("/api/labels/import", files=files).json()["imported"] == 1
+    for hawb in ("H2", "H3"):
+        files = {"file": ("labels.xlsx", workbook_bytes(pcs=1, mawb=warehouse, hawb=hawb))}
+        assert client.post("/api/labels/import", files=files).status_code == 409
     result = client.get("/api/labels?pjt_code=PJT-B").json()
     asyncio.run(label_store.close())
-    assert {(row["mawb"], row["hawb"]) for row in result} == {(warehouse, "H1"), ("M1", "H1")}
+    assert {(row["mawb"], row["hawb"]) for row in result} == {(warehouse, "H1"), ("M1", "H1"), ("PJT-MAWB", "H1")}
     assert client.get("/api/awb").status_code == 403
-    assert client.post("/api/labels/import").status_code == 403
     assert client.post("/api/labels/delete-many", json={"ids": [1]}).status_code == 403
     assert client.get("/dashboard", follow_redirects=False).headers["location"] == f"/{warehouse}/labels"
     with pytest.raises(WebSocketDisconnect):

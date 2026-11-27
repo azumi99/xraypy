@@ -333,7 +333,7 @@ class SqliteStore(IdentityStore):
                 )]
         return await asyncio.to_thread(run)
 
-    async def import_labels(self, rows, pjt_code=None):
+    async def import_labels(self, rows, pjt_code=None, *, claim_unassigned=True):
         def run():
             inserted = updated = 0
             with self._lock:
@@ -352,10 +352,10 @@ class SqliteStore(IdentityStore):
                             airlines_name=excluded.airlines_name, flight_no=excluded.flight_no,
                             route=excluded.route, updated_at=CURRENT_TIMESTAMP,
                             pjt_code=COALESCE(existing_label.pjt_code, excluded.pjt_code)
-                            WHERE excluded.pjt_code IS NULL OR existing_label.pjt_code IS NULL
-                                OR existing_label.pjt_code = excluded.pjt_code""", (*row, pjt_code))
+                            WHERE excluded.pjt_code IS NULL OR (? AND existing_label.pjt_code IS NULL)
+                                OR existing_label.pjt_code = excluded.pjt_code""", (*row, pjt_code, claim_unassigned))
                         if not result.rowcount:
-                            raise LabelOwnershipConflict("Import dibatalkan karena ada label milik PJT lain.")
+                            raise LabelOwnershipConflict("Import dibatalkan karena ada label di luar akses PJT.")
                         if exists:
                             updated += 1
                         else:

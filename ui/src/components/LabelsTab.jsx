@@ -62,7 +62,7 @@ async function printLabels(rows, parts, setError) {
   }
 }
 
-export default function LabelsTab({ printOnly = false }) {
+export default function LabelsTab({ printOnly = false, accountPjtCode }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -175,21 +175,21 @@ export default function LabelsTab({ printOnly = false }) {
           <h3>Print Label</h3>
           <p>{rows.length} label · 100 × 50 mm</p>
         </div>
-        {!printOnly && <div className="flex flex-wrap items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <input ref={fileRef} type="file" accept=".xlsx,.xls" className="hidden"
             onChange={(e) => { const file = e.target.files?.[0]; e.target.value = ""; if (file) void upload(file); }} />
-          <label className="text-xs font-bold">Kode PJT (opsional)
+          {!printOnly && <label className="text-xs font-bold">Kode PJT (opsional)
             <select className="field mt-1" value={importPjt} disabled={busy}
               onChange={(event) => setImportPjt(event.target.value)}>
               <option value="">Internal</option>
               {pjtCodes.map((code) => <option key={code} value={code}>{code}</option>)}
             </select>
-          </label>
+          </label>}
           <a className="btn-ghost" href="/api/labels/template">Download Template</a>
-          <button type="button" className="btn-clay" disabled={busy} onClick={() => fileRef.current?.click()}>
+          <button type="button" className="btn-clay" disabled={busy || (printOnly && !accountPjtCode)} onClick={() => fileRef.current?.click()}>
             {busy ? "Processing..." : "Import Excel"}
           </button>
-        </div>}
+        </div>
       </div>
       {error && <p role="alert" className="text-red-400 text-sm mt-4">{error}</p>}{message && <p role="status" className="st-saved text-sm mt-4">{message}</p>}
     </section>

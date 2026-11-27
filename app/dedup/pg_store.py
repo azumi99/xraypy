@@ -157,7 +157,7 @@ class PgVectorStore(IdentityStore):
             "SELECT DISTINCT mawb FROM cv.label_print WHERE hawb=$1 ORDER BY mawb", hawb_number
         )]
 
-    async def import_labels(self, rows, pjt_code=None):
+    async def import_labels(self, rows, pjt_code=None, *, claim_unassigned=True):
         assert self._pool is not None
         inserted = updated = 0
         async with self._pool.acquire() as conn, conn.transaction():
@@ -171,11 +171,11 @@ class PgVectorStore(IdentityStore):
                     airlines_name=excluded.airlines_name, flight_no=excluded.flight_no,
                     route=excluded.route, updated_at=now(),
                     pjt_code=COALESCE(existing_label.pjt_code, excluded.pjt_code)
-                    WHERE excluded.pjt_code IS NULL OR existing_label.pjt_code IS NULL
+                    WHERE excluded.pjt_code IS NULL OR ($10 AND existing_label.pjt_code IS NULL)
                         OR existing_label.pjt_code = excluded.pjt_code
-                    RETURNING (xmax = 0)""", *row, pjt_code)
+                    RETURNING (xmax = 0)""", *row, pjt_code, claim_unassigned)
                 if created is None:
-                    raise LabelOwnershipConflict("Import dibatalkan karena ada label milik PJT lain.")
+                    raise LabelOwnershipConflict("Import dibatalkan karena ada label di luar akses PJT.")
                 if created:
                     inserted += 1
                 else:

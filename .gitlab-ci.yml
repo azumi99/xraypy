@@ -8,7 +8,13 @@ production:
 
 staging:
   script:
-        - echo "Build staging"
-        - ssh -o StrictHostKeyChecking=no root@$server_stg -p 23022 $script_stg
+    - echo "Build staging"
+    - |
+      if [ -z "${SSH_KNOWN_HOSTS_STAGING:-}" ] || [ ! -s "$SSH_KNOWN_HOSTS_STAGING" ]; then
+        echo "Set SSH_KNOWN_HOSTS_STAGING to a GitLab File variable with the verified staging SSH host key." >&2
+        exit 1
+      fi
+      ssh -p 23022 -o BatchMode=yes -o StrictHostKeyChecking=yes \
+        -o "UserKnownHostsFile=$SSH_KNOWN_HOSTS_STAGING" "root@$server_stg" "$script_stg"
   only:
       - staging

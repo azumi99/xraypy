@@ -5,8 +5,8 @@ from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse
-from openpyxl import load_workbook
+from fastapi.responses import FileResponse, Response
+from openpyxl import Workbook, load_workbook
 import xlrd
 from pydantic import BaseModel
 
@@ -90,7 +90,18 @@ async def list_pjt_codes(request: Request):
 
 
 @router.get("/template")
-async def download_template() -> FileResponse:
+async def download_template(request: Request):
+    if (identity(request) or {}).get("role") == "label_print":
+        workbook = Workbook()
+        workbook.active.append(["Mawb", "Pcs_mawb", "Hawb", "Pcs_hawb", "Airlines_name", "FlightNo", "Route"])
+        output = BytesIO()
+        workbook.save(output)
+        workbook.close()
+        return Response(
+            output.getvalue(),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": 'attachment; filename="LABEL FEDEX.xlsx"'},
+        )
     return FileResponse(
         Path(__file__).with_name("templates") / "LABEL FEDEX.xlsx",
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -101,17 +112,28 @@ async def download_template() -> FileResponse:
 @router.post("/import")
 async def import_labels(request: Request, file: Annotated[UploadFile, File()],
                         pjt_code: Annotated[str | None, Form()] = None):
+    print_only = (identity(request) or {}).get("role") == "label_print"
     try:
-        code = normalize_pjt_code(pjt_code) if pjt_code else None
-        rows = parse_workbook(await file.read())
+        if print_only:
+            code = request.state.label_pjt_code
+            if not code:
+                raise HTTPException(403, "Akun belum memiliki kode PJT.")
+            if pjt_code and normalize_pjt_code(pjt_code) != code:
+                raise HTTPException(403, "Import hanya untuk PJT akun ini.")
+        else:
+            code = normalize_pjt_code(pjt_code) if pjt_code else None
+        payload = await file.read()
+        rows = parse_workbook(payload)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     finally:
         await file.close()
-    if code and code not in await list_pjt_codes(request):
+    if code and not print_only and code not in await list_pjt_codes(request):
         raise HTTPException(422, "Kode PJT belum terdaftar di warehouse ini.")
     try:
         store = request.app.state.store
+        if print_only:
+            return await store.import_labels(rows, code, claim_unassigned=False)
         return await store.import_labels(rows, code) if code else await store.import_labels(rows)
     except LabelOwnershipConflict as exc:
         raise HTTPException(409, str(exc)) from exc

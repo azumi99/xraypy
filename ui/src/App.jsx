@@ -326,7 +326,7 @@ function AuthenticatedApp({ user, onLogout, logoutError, logoutPending }) {
             <AwbTab warehouse={user.access} readOnly={readOnly} onChanged={refreshSession} onOpenDetail={(id) => navigate(`/awb/${id}`)} onEvent={onEvent} connected={connected} />
           )}
           {activePath === "/matrix" && <MatrixTab key={user.access} onEvent={onEvent} connected={connected} />}
-          {activePath === "/labels" && <LabelsTab printOnly={printOnly} />}
+          {activePath === "/labels" && <LabelsTab printOnly={printOnly} accountPjtCode={user.pjt_code} />}
           {admin && activePath === "/users" && <UsersTab />}
           {activePath === "/settings" && <SettingsTab warehouse={user.access} />}
           {awbDetailId && (
