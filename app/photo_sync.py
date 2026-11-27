@@ -17,6 +17,8 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from .photo_obs import ObsPhotoStore, object_key
+
 logger = logging.getLogger(__name__)
 _FINAL_CHUNK = b"xray-cargo-final\x001"
 _PENDING_CHUNK = b"xray-cargo-pending\x001"
@@ -67,6 +69,8 @@ def is_pending_png(data: bytes) -> bool:
 class PhotoSync:
     def __init__(self, settings, store=None):
         self.enabled = getattr(settings, "photo_sync_enabled", False)
+        endpoint = getattr(settings, "photo_obs_endpoint", "")
+        self.obs = ObsPhotoStore(settings) if endpoint else None
         if not self.enabled:
             return
         self.store = store
@@ -76,13 +80,18 @@ class PhotoSync:
             "bgd": settings.photo_sync_bgd_token,
             "cas": settings.photo_sync_cas_token,
         }
-        url = urlsplit(settings.photo_sync_url)
-        if (url.scheme != "https" or not url.hostname or url.username or url.password
-                or url.query or url.fragment):
-            raise ValueError("photo sync URL must be an HTTPS base URL")
-        if not all(self.tokens.values()):
-            raise ValueError("photo sync requires a token for each site")
-        self.url = settings.photo_sync_url.rstrip("/") + "/api/sync/photos"
+        if self.obs is None:
+            url = urlsplit(settings.photo_sync_url)
+            if (url.scheme != "https" or not url.hostname or url.username or url.password
+                    or url.query or url.fragment):
+                raise ValueError("photo sync URL must be an HTTPS base URL")
+            if not all(self.tokens.values()):
+                raise ValueError("photo sync requires a token for each site")
+            self.url = settings.photo_sync_url.rstrip("/") + "/api/sync/photos"
+        else:
+            # Acknowledgments for the old VM are independent of acknowledgments for OBS.
+            destination = hashlib.sha256(f"{endpoint.rstrip('/')}/{self.obs.bucket}".encode()).hexdigest()[:12]
+            self.outbox += f".obs-{destination}"
         with self._db() as db:
             db.execute("""CREATE TABLE IF NOT EXISTS photo_outbox (
                 site TEXT NOT NULL, ref TEXT NOT NULL, sha256 TEXT NOT NULL,
@@ -306,7 +315,7 @@ class PhotoSync:
                 if self.store is not None and time.monotonic() >= next_reconcile:
                     await self.reconcile()
                     next_reconcile = time.monotonic() + 60
-                if self.store is not None and time.monotonic() >= next_legacy:
+                if self.obs is None and self.store is not None and time.monotonic() >= next_legacy:
                     await self.verify_legacy(client)
                     next_legacy = time.monotonic() + 300
                 lease = secrets.token_hex(16)
@@ -333,22 +342,30 @@ class PhotoSync:
                     if len(data) != size or hashlib.sha256(data).hexdigest() != digest:
                         state = "failed"
                     else:
-                        try:
-                            response = await client.put(
-                                self.url, headers={"Authorization": f"Bearer {self.tokens[site]}"},
-                                data={"ref": ref, "sha256": digest},
-                                files={"file": (Path(ref).name, data, "application/octet-stream")},
-                            )
+                        if self.obs is not None:
+                            key = object_key(site, self._parts(site, ref))
                             try:
-                                ack = response.json()
-                            except ValueError:
-                                ack = None
-                            confirmed = (response.status_code == 200 and isinstance(ack, dict)
-                                         and ack.get("status") in ("created", "exists") and ack.get("sha256") == digest)
-                            state = ("synced" if confirmed else
-                                     "pending" if response.status_code in (200, 401, 403, 404, 429) or response.status_code >= 500 else "failed")
-                        except httpx.RequestError:
-                            state = "pending"
+                                state = await asyncio.to_thread(self.obs.upload, key, data, digest)
+                            except Exception as exc:
+                                logger.warning("OBS photo sync will retry (%s)", type(exc).__name__)
+                                state = "pending"
+                        else:
+                            try:
+                                response = await client.put(
+                                    self.url, headers={"Authorization": f"Bearer {self.tokens[site]}"},
+                                    data={"ref": ref, "sha256": digest},
+                                    files={"file": (Path(ref).name, data, "application/octet-stream")},
+                                )
+                                try:
+                                    ack = response.json()
+                                except ValueError:
+                                    ack = None
+                                confirmed = (response.status_code == 200 and isinstance(ack, dict)
+                                             and ack.get("status") in ("created", "exists") and ack.get("sha256") == digest)
+                                state = ("synced" if confirmed else
+                                         "pending" if response.status_code in (200, 401, 403, 404, 429) or response.status_code >= 500 else "failed")
+                            except httpx.RequestError:
+                                state = "pending"
                 attempts += 1
                 delay = min(300, 2 ** min(attempts - 1, 9)) if state == "pending" else 0
                 with self._db() as db:

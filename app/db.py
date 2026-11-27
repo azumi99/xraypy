@@ -38,7 +38,8 @@ async def apply_migrations(pool: asyncpg.Pool, settings: Settings) -> None:
     """Apply SQL migrations in filename order; tracked in cv.schema_migrations."""
     async with pool.acquire() as conn:
         await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
-        await conn.execute("CREATE SCHEMA IF NOT EXISTS cv")
+        if not await conn.fetchval("SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'cv')"):
+            await conn.execute("CREATE SCHEMA IF NOT EXISTS cv")
         await conn.execute(
             "CREATE TABLE IF NOT EXISTS cv.schema_migrations (name TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())"
         )

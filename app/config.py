@@ -209,6 +209,10 @@ class Settings(BaseSettings):
     admin_password: str | None = None
     bootstrap_password: str | None = None
     photo_sync_enabled: bool = False
+    photo_obs_endpoint: str = ""
+    photo_obs_bucket: str = ""
+    photo_obs_access_key: str = ""
+    photo_obs_secret_key: str = ""
     photo_sync_url: str = ""
     photo_sync_outbox_path: Path = Path("data/photo-sync-outbox.sqlite3")
     photo_sync_bgd_token: str = ""

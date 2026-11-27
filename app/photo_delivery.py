@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, Response
 from PIL import UnidentifiedImageError
 
+from .photo_obs import object_key
 from .photo_receiver import MAX_BYTES, photo_mime, read_photo
 from .photo_sync import PhotoSync
 from .security import identity
@@ -22,6 +23,14 @@ _WINDOWS = os.name == "nt"
 
 
 async def _remote(sync, site, ref):
+    obs = getattr(sync, "obs", None)
+    if obs is not None:
+        try:
+            return await asyncio.to_thread(obs.read, object_key(site, PhotoSync._parts(site, ref)))
+        except FileNotFoundError:
+            raise HTTPException(404, "Photo not found") from None
+        except Exception:
+            raise HTTPException(503, "Photo source unavailable") from None
     async with httpx.AsyncClient(timeout=httpx.Timeout(10), follow_redirects=False, trust_env=False) as client:
         async with client.stream("GET", sync.url, params={"ref": ref},
                                  headers={"Authorization": f"Bearer {sync.tokens[site]}"}) as response:
@@ -66,7 +75,7 @@ async def deliver_photo(request: Request, ref: str):
         if path.is_relative_to(root) and not path.is_symlink() and path.is_file():
             return FileResponse(path, headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
         sync = request.app.state.photo_sync
-        if sync.enabled:
+        if sync.enabled or getattr(sync, "obs", None) is not None:
             try:
                 data = await asyncio.wait_for(_remote(sync, site, ref), timeout=15)
             except (httpx.HTTPError, TimeoutError, KeyError):
@@ -79,7 +88,7 @@ async def deliver_photo(request: Request, ref: str):
         data = await asyncio.to_thread(read_photo, request.app.state.settings.crop_dir, site, ref)
     except FileNotFoundError:
         sync = request.app.state.photo_sync
-        if not sync.enabled:
+        if not sync.enabled and getattr(sync, "obs", None) is None:
             raise HTTPException(404, "Photo not found") from None
         try:
             data = await asyncio.wait_for(_remote(sync, site, ref), timeout=15)
