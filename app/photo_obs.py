@@ -44,6 +44,24 @@ class ObsPhotoStore:
         )
         self.client.context.check_hostname = True
 
+    def list_photo_keys(self, site):
+        prefix = f"{site}/"
+        marker = None
+        keys = set()
+        while True:
+            response = self.client.listObjects(self.bucket, prefix=prefix, marker=marker, max_keys=1000)
+            if response.status != 200 or response.body is None:
+                raise OSError(f"OBS listing failed ({response.status})")
+            page = response.body
+            page_keys = [item.key for item in page.contents or []]
+            keys.update(key for key in page_keys if key.startswith(prefix))
+            if not page.is_truncated:
+                return keys
+            next_marker = page.next_marker or (page_keys[-1] if page_keys else None)
+            if not next_marker or next_marker == marker:
+                raise OSError("OBS listing did not advance")
+            marker = next_marker
+
     def read(self, key):
         response = self.client.getObject(self.bucket, key, loadStreamInMemory=False)
         if response.status == 404:

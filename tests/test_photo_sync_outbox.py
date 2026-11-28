@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
+from app.photo_obs import ObsPhotoStore
 from app.photo_sync import PhotoSync
 
 
@@ -32,6 +33,37 @@ async def run_until(sync, predicate):
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
+
+
+def test_unregistered_photo_status_uses_paginated_obs_listing(settings):
+    sync = PhotoSync(settings)
+    obs = ObsPhotoStore.__new__(ObsPhotoStore)
+    obs.bucket = "test-bucket"
+    calls = []
+
+    def list_objects(bucket, *, prefix, marker, max_keys):
+        assert bucket == "test-bucket"
+        calls.append((prefix, marker))
+        if marker is None:
+            key = prefix + "crops/batch/x.png"
+            body = SimpleNamespace(contents=[SimpleNamespace(key=key)], is_truncated=True, next_marker=key)
+        else:
+            key = prefix + "label/abc.jpg"
+            body = SimpleNamespace(contents=[SimpleNamespace(key=key)], is_truncated=False)
+        return SimpleNamespace(status=200, body=body)
+
+    obs.client = SimpleNamespace(listObjects=list_objects)
+    sync.obs = obs
+    refs = ["batch/x.png", "label-photos/abc.jpg", "batch/missing.png"]
+    assert sync.status("bgd", refs) == {
+        "batch/x.png": "synced",
+        "label-photos/abc.jpg": "synced",
+        "batch/missing.png": "unknown",
+    }
+    assert sync.status("bgd", ["label-photos/abc.jpg"]) == {"label-photos/abc.jpg": "synced"}
+    assert calls == [("bgd/", None), ("bgd/", "bgd/crops/batch/x.png")]
+    assert sync.status("cas", ["cas/label-photos/abc.jpg"]) == {"cas/label-photos/abc.jpg": "synced"}
+    assert calls[-2:] == [("cas/", None), ("cas/", "cas/crops/batch/x.png")]
 
 
 def test_offline_retry_and_restart(settings, monkeypatch):

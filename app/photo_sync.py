@@ -9,6 +9,7 @@ import secrets
 import sqlite3
 import stat
 import struct
+import threading
 import time
 import zlib
 from contextlib import contextmanager
@@ -71,6 +72,8 @@ class PhotoSync:
         self.enabled = getattr(settings, "photo_sync_enabled", False)
         endpoint = getattr(settings, "photo_obs_endpoint", "")
         self.obs = ObsPhotoStore(settings) if endpoint else None
+        self._obs_keys = {}
+        self._obs_keys_locks = {site: threading.Lock() for site in ("bgd", "cas")}
         if not self.enabled:
             return
         self.store = store
@@ -176,21 +179,43 @@ class PhotoSync:
         if site not in self.tokens:
             raise ValueError("invalid site")
         result = {}
+        unregistered = {}
         with self._db() as db:
             for ref in refs:
-                self._parts(site, ref)
+                parts = self._parts(site, ref)
                 row = db.execute("SELECT status FROM photo_outbox WHERE site=? AND ref=?",
                                  (site, ref)).fetchone()
                 if row:
                     result[ref] = row[0]
                 else:
-                    try:
-                        data = self._read(site, ref)
-                        is_label = ref.startswith("cas/label-photos/" if site == "cas" else "label-photos/")
-                        result[ref] = "unknown" if is_label or is_final_png(data) else "failed"
-                    except (OSError, ValueError):
-                        result[ref] = "unknown"
+                    unregistered[ref] = parts
+        keys = self._listed_obs_keys(site) if self.obs is not None and unregistered else set()
+        for ref, parts in unregistered.items():
+            if object_key(site, parts) in keys:
+                result[ref] = "synced"
+                continue
+            try:
+                data = self._read(site, ref)
+                is_label = ref.startswith("cas/label-photos/" if site == "cas" else "label-photos/")
+                result[ref] = "unknown" if is_label or is_final_png(data) else "failed"
+            except (OSError, ValueError):
+                result[ref] = "unknown"
         return result
+
+    def _listed_obs_keys(self, site):
+        with self._obs_keys_locks[site]:
+            expires, keys = self._obs_keys.get(site, (0, set()))
+            if time.monotonic() >= expires:
+                try:
+                    keys = self.obs.list_photo_keys(site)
+                except OSError:
+                    logger.warning("Could not list OBS photos for %s", site)
+                    keys = set()
+                    ttl = 10
+                else:
+                    ttl = 60
+                self._obs_keys[site] = (time.monotonic() + ttl, keys)
+            return keys
 
     def _recover_pending(self, site, ref, view, awb):
         import cv2
