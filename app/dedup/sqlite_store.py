@@ -688,12 +688,12 @@ class SqliteStore(IdentityStore):
         return int(row["nxt"])
 
     def _pair_next_awb_sync(
-        self, conn: sqlite3.Connection, parcel_id: int, batch_id: str, target_awb_id: int | None = None
+        self, conn: sqlite3.Connection, parcel_id: int, batch_id: str
     ) -> AwbRecord | None:
         row = conn.execute(
             "SELECT id FROM awb WHERE status='WAITING' AND (batch_id IS NULL OR batch_id=?)"
-            " AND (? IS NULL OR id=?) ORDER BY created_at, id LIMIT 1",
-            (batch_id, target_awb_id, target_awb_id),
+            " ORDER BY created_at, id LIMIT 1",
+            (batch_id,),
         ).fetchone()
         if row is None:
             return None
@@ -763,8 +763,8 @@ class SqliteStore(IdentityStore):
                         kw["embedding"].astype(np.float32).tobytes(),
                     ),
                 )
-                awb = self._pair_next_awb_sync(conn, identity_id, kw["batch_id"], kw.get("target_awb_id"))
-                if (kw["require_awb"] or kw.get("target_awb_id") is not None) and awb is None:
+                awb = self._pair_next_awb_sync(conn, identity_id, kw["batch_id"])
+                if kw["require_awb"] and awb is None:
                     raise AwbRequiredError("no WAITING AWB available for NEW parcel")
                 conn.commit()
             except sqlite3.IntegrityError as exc:
@@ -978,7 +978,7 @@ class SqliteStore(IdentityStore):
             conn = self._connect()
             if status:
                 rows = conn.execute(
-                    "SELECT * FROM awb WHERE status=? ORDER BY created_at", (status,)
+                    "SELECT * FROM awb WHERE status=? ORDER BY created_at, id", (status,)
                 ).fetchall()
             else:
                 rows = conn.execute("SELECT * FROM awb ORDER BY created_at").fetchall()

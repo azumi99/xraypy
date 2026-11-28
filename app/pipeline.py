@@ -23,10 +23,9 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from .capture_selection import CaptureFrames, CaptureSelection
 from .config import Settings
 from .dedup.service import Decision, DedupService
-from .dedup.store import AwbRecord, new_batch_id
+from .dedup.store import new_batch_id
 from .events import EventBus
 from .geometry import encode_png
 from .strip_tracker import StripConfig, StripTracker, contour_crop_bgra
@@ -208,10 +207,8 @@ class Pipeline:
         self._side_track_states: dict[int, dict] = {}
         self._pending_top = deque()
         self._pending_side = deque()
+        self._track_capture_lock = asyncio.Lock()
         self._side_capture_samples: dict[int, deque] = {}
-        self.capture_selection: CaptureSelection | None = None
-        self._latest_capture_frames = None
-        self._selected_seq = 0
         self._task: asyncio.Task | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
 
@@ -234,7 +231,7 @@ class Pipeline:
         )
 
     # -- session lifecycle --------------------------------------------------
-    async def start_session(self, *, select_awb: bool = False) -> str:
+    async def start_session(self) -> str:
         if self.session.running:
             # stale session (crashed loop task) -> clean up and start fresh
             if self._task is not None and not self._task.done():
@@ -246,9 +243,6 @@ class Pipeline:
         if current_warehouse() == "cas":
             batch_id = f"cas/{batch_id}"
         self.session = SessionState(batch_id=batch_id, running=True, started_at=time.time())
-        self.capture_selection = CaptureSelection() if select_awb else None
-        self._latest_capture_frames = None
-        self._selected_seq = 0
         self.overlays.clear()
         self._tracker.reset()
         self._track_states.clear()
@@ -274,11 +268,7 @@ class Pipeline:
     async def stop_session(self) -> dict:
         if not self.session.running:
             return {"stopped": False}
-        if self.capture_selection is not None and self.capture_selection.state == "saving":
-            raise RuntimeError("Tunggu sampai penyimpanan capture selesai.")
         self.session.running = False
-        self.capture_selection = None
-        self._latest_capture_frames = None
         if self._task is not None:
             self._task.cancel()
             try:
@@ -313,14 +303,6 @@ class Pipeline:
         while self.session.running:
             try:
                 frames = await asyncio.to_thread(self._sources.read_frames)
-                selection = self.capture_selection
-                if selection is not None:
-                    if selection.state == "armed" and time.monotonic() >= selection.deadline:
-                        selection.move("review", "Waktu capture habis. Periksa paket sebelum melanjutkan.")
-                    if frames is not None and "top" in frames and "side" in frames:
-                        self._latest_capture_frames = (
-                            time.monotonic(), frames["top"], frames["side"], datetime.now().astimezone(),
-                        )
                 if frames is None:
                     self._annotated = self._annotated_side = None
                     self._match_track_captures(time.monotonic())
@@ -675,7 +657,7 @@ class Pipeline:
         W = top.shape[1]
         entry_zone = W * 0.30
         seen: set[int] = set()
-        for det in parcels:
+        for det in sorted(parcels, key=lambda parcel: (-parcel.bbox[2], parcel.parcel_id)):
             seen.add(det.parcel_id)
             if not getattr(det, "observed", True):
                 state = self._track_states.get(det.parcel_id)
@@ -707,8 +689,6 @@ class Pipeline:
                 slot = {"batch_id": batch_id, "seq": det.parcel_id, "decision": None, "side": None, "time": captured_at, "captured_at": datetime.now().astimezone()}
                 slot["side_ready"] = asyncio.get_running_loop().create_future()
                 slot["belt_span"] = (left / W, right / W)
-                if self.capture_selection is not None:
-                    slot["selection_revision"] = self.capture_selection.revision
                 self._queue_track_capture(self._pending_top, slot)
                 capture_det = ParcelDetection(det.parcel_id, (left, upper + top_y0, right, lower + top_y0), det.conf)
                 asyncio.create_task(self._capture_with_effect(capture_det, full_top.copy(), slot, batch_id, st))
@@ -1022,7 +1002,9 @@ class Pipeline:
 
     async def _capture_with_effect(self, det, frame, side, batch_id, state) -> None:
         try:
-            await self._handle_track_parcel(det, frame, side, batch_id)
+            # A later capture must not take the queue head while an earlier one is still processing.
+            async with self._track_capture_lock:
+                await self._handle_track_parcel(det, frame, side, batch_id)
         finally:
             state["capturing"] = False
 
@@ -1037,121 +1019,38 @@ class Pipeline:
         patch = frame[y1 : y2 + 1, x1 : x2 + 1]
         if patch.shape[0] < 32 or patch.shape[1] < 32:
             return
-        if side is not None and "selection_revision" in side:
-            await self._stage_selected_capture(patch, side)
-            return
-        await self._commit_track_capture(patch, side, batch_id, det.parcel_id)
-
-    async def _stage_selected_capture(self, patch, slot):
-        matched = await slot["side_ready"]
-        selection = self.capture_selection
-        if selection is None or slot["batch_id"] != self.session.batch_id:
-            return
-        current = slot["selection_revision"] == selection.revision
-        if not matched:
-            if current and selection.state == "armed":
-                selection.move("review", "Kedua tampak tidak bisa dipasangkan.")
-            return
-        def capture_frames():
-            return CaptureFrames(patch.copy(), slot["side"].copy(),
-                                 slot["captured_at"], slot.get("side_captured_at"))
-
-        if current and selection.state in ("idle", "armed"):
-            selection.candidate = capture_frames()
-            selection.move("candidate" if selection.awb else "unassigned")
-        elif selection.state == "idle":
-            selection.candidate = capture_frames()
-            selection.move("unassigned")
-        elif selection.held is None:
-            selection.held = capture_frames()
-
-    def select_capture_awb(self, awb: AwbRecord) -> None:
-        selection = self.capture_selection
-        if selection.state == "unassigned":
-            selection.awb = awb
-            selection.move("candidate")
-        elif selection.state == "idle":
-            selection.arm(awb)
-        else:
-            raise RuntimeError("Selesaikan item capture yang aktif terlebih dahulu.")
-
-    def freeze_capture_frames(self):
-        selection = self.capture_selection
-        if selection.awb is None or selection.state not in ("armed", "candidate", "review"):
-            raise RuntimeError("Pilih AWB yang akan diambil fotonya.")
-        latest = self._latest_capture_frames
-        if latest is None or time.monotonic() - latest[0] > 2:
-            raise RuntimeError("Frame kedua kamera belum tersedia.")
-        selection.manual_frames = CaptureFrames(latest[1].copy(), latest[2].copy(), latest[3], latest[3])
-        selection.move("manual")
-
-    async def confirm_selected_capture(self, boxes=None) -> None:
-        selection = self.capture_selection
-        if selection.awb is None or selection.state != ("manual" if boxes is not None else "candidate"):
-            raise RuntimeError("Tidak ada kandidat capture yang siap disimpan.")
-        frames = selection.candidate if boxes is None else selection.manual_frames
-        top, side = frames.images if boxes is None else (
-            self._manual_crop(frame, box) for frame, box in zip(frames.images, boxes, strict=True)
-        )
-        minimum = max(32, self._settings.detector.min_crop_side_px)
-        if any(min(frame.shape[:2]) < minimum for frame in (top, side)):
-            raise RuntimeError("Area capture terlalu kecil.")
-        selection.move("saving")
-        self._selected_seq += 1
-        seq = self._selected_seq
-        batch_id = self.session.batch_id
-        slot = {"batch_id": batch_id, "seq": seq, "side": side, "decision": None,
-                "captured_at": frames.captured_at, "side_captured_at": frames.side_captured_at}
-        try:
-            paired = await self._commit_track_capture(top, slot, batch_id, seq, target_awb_id=selection.awb.id)
-        except BaseException:
-            selection.move("review", "Penyimpanan capture belum terkonfirmasi.")
-            raise
-        if paired:
-            selection.clear()
-        else:
-            selection.move("review", "Capture belum terpasang. Periksa antrean atau scan ulang.")
-
-    @staticmethod
-    def _manual_crop(frame, box):
-        h, w = frame.shape[:2]
-        left, top, right, bottom = box
-        return frame[int(top * h):round(bottom * h), int(left * w):round(right * w)]
-
-    async def _commit_track_capture(self, patch, side, batch_id, seq, *, target_awb_id=None):
         bgra = cv2.cvtColor(patch, cv2.COLOR_BGR2BGRA)
-        crop_rel = f"{batch_id}/seq_{seq}_top.png"
+        crop_rel = f"{batch_id}/seq_{det.parcel_id}_top.png"
         crop_path = Path(self._settings.crop_dir, crop_rel)
-        owned = await self._prepare_top_capture(batch_id, seq, crop_path, bgra)
+        owned = await self._prepare_top_capture(batch_id, det.parcel_id, crop_path, bgra)
         if owned is None:
             return
         side_ref = None
-        if side is not None and ("side_ready" in side or target_awb_id is not None):
-            if "side_ready" in side and not await side["side_ready"]:
-                logger.warning("capture incomplete batch=%s seq=%s; AWB remains waiting", batch_id, seq)
+        if side is not None and "side_ready" in side:
+            if not await side["side_ready"]:
+                logger.warning("capture incomplete batch=%s seq=%s; AWB remains waiting", batch_id, det.parcel_id)
                 return
-            side_ref = f"{batch_id}/seq_{seq}_side.png"
+            side_ref = f"{batch_id}/seq_{det.parcel_id}_side.png"
             try:
                 side_bgra = cv2.cvtColor(side["side"], cv2.COLOR_BGR2BGRA)
                 side["side_owned"] = await asyncio.to_thread(
                     _save_original, Path(self._settings.crop_dir, side_ref), side_bgra,
                 )
             except Exception:  # noqa: BLE001
-                logger.exception("failed saving required side capture for parcel %s", seq)
+                logger.exception("failed saving required side capture for parcel %s", det.parcel_id)
                 return
         try:
             decision = await self._dedup.process_parcel(
                 batch_id=batch_id,
-                track_id=seq,
+                track_id=det.parcel_id,
                 crop_bgra=bgra,
                 crop_ref=crop_rel,
                 crop_ref_side=side_ref,
-                **({"target_awb_id": target_awb_id} if target_awb_id is not None else {}),
             )
         except Exception:  # noqa: BLE001
-            logger.exception("dedup decision crashed for parcel %s", seq)
+            logger.exception("dedup decision crashed for parcel %s", det.parcel_id)
             return
-        if not self._owns_capture(decision, batch_id, seq, crop_rel):
+        if not self._owns_capture(decision, batch_id, det.parcel_id, crop_rel):
             return
         awb = await self._capture_awb(decision)
         if decision.record.awb_id is not None and awb is None:
@@ -1161,15 +1060,14 @@ class Pipeline:
             await asyncio.to_thread(_save_capture, crop_path, bgra, "top", awb, captured_at=side.get("captured_at") if side else None, owned=owned)
             await self._enqueue_final_photo(crop_rel)
         except Exception:  # noqa: BLE001
-            logger.exception("failed watermarking crop for parcel %s; original preserved", seq)
+            logger.exception("failed watermarking crop for parcel %s; original preserved", det.parcel_id)
         if side is not None:
             side["awb"] = awb
             side["decision"] = decision
             self._store_paired_side(side)
         if self.session.batch_id == batch_id:
             self.session.parcel_count += 1
-            await self._apply_decision(seq, decision, batch_id)
-        return awb is not None and awb.id == target_awb_id
+            await self._apply_decision(det.parcel_id, decision, batch_id)
 
     def _annotate_track(self, frame: np.ndarray, overlays=None, *, delta: np.ndarray | None = None) -> np.ndarray:
         annotated = frame.copy()

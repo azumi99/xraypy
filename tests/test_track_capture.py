@@ -139,6 +139,7 @@ def test_independent_side_pairing_and_color_crops(tmp_path, monkeypatch):
         dedup.worker.embed = AsyncMock(return_value=None)
         gates = {1: asyncio.Event(), 2: asyncio.Event()}
         saved = {1: asyncio.Event(), 2: asyncio.Event()}
+        processed = []
 
         async def add_side_capture(parcel_id, *_args, **_kwargs):
             saved[parcel_id].set()
@@ -148,6 +149,7 @@ def test_independent_side_pairing_and_color_crops(tmp_path, monkeypatch):
         async def process_parcel(**kwargs):
             await gates[kwargs["track_id"]].wait()
             i = kwargs["track_id"]
+            processed.append(i)
             awb = SimpleNamespace(id=i, parcel_id=i, status="PAIRED", awb_number=f"M{i}", hawb_number=f"H{i}", part=i, total=2)
             return SimpleNamespace(record=SimpleNamespace(id=i, batch_id="batch", track_id=i, crop_ref=kwargs["crop_ref"], awb_id=i), awb=awb)
 
@@ -186,9 +188,11 @@ def test_independent_side_pairing_and_color_crops(tmp_path, monkeypatch):
         pipeline._pending_side[1]["time"] = base + 10
         pipeline._match_track_captures(base + 12)
         gates[2].set()
-        await asyncio.wait_for(saved[2].wait(), timeout=3)
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(saved[2].wait(), timeout=0.05)
         gates[1].set()
-        await asyncio.wait_for(saved[1].wait(), timeout=3)
+        await asyncio.wait_for(asyncio.gather(saved[1].wait(), saved[2].wait()), timeout=3)
+        assert processed == [1, 2]
         calls = dedup.store.add_side_capture.await_args_list
         assert {c.args[0]: c.args[2] for c in calls} == {
             1: "batch/seq_1_side.png", 2: "batch/seq_2_side.png"

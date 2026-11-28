@@ -403,7 +403,6 @@ class PgVectorStore(IdentityStore):
         sim_score: float | None,
         require_awb: bool,
         crop_ref_side: str | None = None,
-        target_awb_id: int | None = None,
     ) -> tuple[IdentityRecord, AwbRecord | None]:
         assert self._pool is not None
         async with self._pool.acquire() as conn:
@@ -444,8 +443,8 @@ class PgVectorStore(IdentityStore):
                     embedding,
                     crop_ref_side,
                 )
-                awb = await self._pair_next_awb_conn(conn, row["id"], batch_id, target_awb_id)
-                if (require_awb or target_awb_id is not None) and awb is None:
+                awb = await self._pair_next_awb_conn(conn, row["id"], batch_id)
+                if require_awb and awb is None:
                     raise AwbRequiredError("no WAITING AWB available for NEW parcel")
                 rec = await self._get_in_conn(conn, row["id"])
                 return rec, awb
@@ -457,7 +456,7 @@ class PgVectorStore(IdentityStore):
 
     @staticmethod
     async def _pair_next_awb_conn(
-        conn: asyncpg.Connection, parcel_id: int, batch_id: str, target_awb_id: int | None = None
+        conn: asyncpg.Connection, parcel_id: int, batch_id: str
     ) -> AwbRecord | None:
         row = await conn.fetchrow(
             """
@@ -465,16 +464,14 @@ class PgVectorStore(IdentityStore):
             WHERE id = (
                 SELECT id FROM cv.awb
                 WHERE status='WAITING' AND (batch_id IS NULL OR batch_id=$2)
-                  AND ($3::bigint IS NULL OR id=$3)
                 ORDER BY created_at, id
                 LIMIT 1
-                FOR UPDATE SKIP LOCKED
+                FOR UPDATE
             )
             RETURNING id, awb_number, batch_id, status, parcel_id, created_at, hawb_number, part, total, label_photo_ref, timecreated
             """,
             parcel_id,
             batch_id,
-            target_awb_id,
         )
         if row is not None:
             await conn.execute("UPDATE cv.parcel_identity SET awb_id=$2 WHERE id=$1", parcel_id, row["id"])
@@ -633,7 +630,7 @@ class PgVectorStore(IdentityStore):
     async def list_awbs(self, status: str | None = None) -> list[AwbRecord]:
         if status:
             rows = await self._run(
-                "SELECT id, awb_number, batch_id, status, parcel_id, created_at, hawb_number, part, total, label_photo_ref, timecreated FROM cv.awb WHERE status=$1 ORDER BY created_at",
+                "SELECT id, awb_number, batch_id, status, parcel_id, created_at, hawb_number, part, total, label_photo_ref, timecreated FROM cv.awb WHERE status=$1 ORDER BY created_at, id",
                 status,
             )
         else:
