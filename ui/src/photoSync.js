@@ -24,7 +24,7 @@ export function photoSyncPaths(refs) {
 
 export function photoSyncStatus(items, ref) {
   const status = Object.hasOwn(items ?? {}, ref) ? items[ref] : undefined;
-  return ["pending", "synced", "failed", "unknown", "stored", "missing"].includes(status) ? status : "unknown";
+  return ["pending", "synced", "available", "failed", "unknown", "stored", "missing"].includes(status) ? status : "unknown";
 }
 
 export function photoPath(ref) {
@@ -38,5 +38,5 @@ export function photoPath(ref) {
 export function photoSyncLabel(enabled, items, ref) {
   if (enabled === false) return "Sinkronisasi belum aktif";
   if (enabled !== true) return "Status sinkronisasi tidak tersedia";
-  return { pending: "Menunggu sinkronisasi", synced: "Tersinkron", failed: "Sinkronisasi gagal atau foto belum final", unknown: "Belum terdaftar", stored: "Tersedia di server", missing: "Belum tersedia di server" }[photoSyncStatus(items, ref)];
+  return { pending: "Menunggu sinkronisasi", synced: "Tersinkron dan terverifikasi", available: "Tersedia di OBS", failed: "Sinkronisasi gagal atau foto belum final", unknown: "Belum terdaftar", stored: "Tersedia di server", missing: "Belum tersedia di server" }[photoSyncStatus(items, ref)];
 }

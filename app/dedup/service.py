@@ -8,6 +8,7 @@ and no parcel is silently dropped.
 from __future__ import annotations
 
 import logging
+from functools import partial
 from dataclasses import dataclass
 
 import numpy as np
@@ -52,15 +53,17 @@ class DedupService:
         crop_ref: str | None = None,
         shape: ShapeFeatures | None = None,
         crop_ref_side: str | None = None,
+        target_awb_id: int | None = None,
     ) -> Decision:
         """Full decision flow for one finalized parcel crop."""
+        review = partial(self._review, selected_capture=target_awb_id is not None)
         if shape is None:
             shape = compute_shape_features(crop_bgra)
         if (
             shape.area <= 0
             or min(crop_bgra.shape[0], crop_bgra.shape[1]) < self._settings.detector.min_crop_side_px
         ):
-            return await self._review(
+            return await review(
                 batch_id=batch_id,
                 track_id=track_id,
                 crop_bgra=crop_bgra,
@@ -73,13 +76,13 @@ class DedupService:
             embedding = await self._worker.embed(crop_bgra)
         except EmbeddingTimeoutError:
             logger.warning("embedding timeout for track %s — REVIEW", track_id)
-            return await self._review(batch_id, track_id, crop_bgra, crop_ref, shape, "EMBEDDING_TIMEOUT")
+            return await review(batch_id, track_id, crop_bgra, crop_ref, shape, "EMBEDDING_TIMEOUT")
         except QueueFullError as exc:
             logger.warning("embedding queue full for track %s — REVIEW (%s)", track_id, exc)
-            return await self._review(batch_id, track_id, crop_bgra, crop_ref, shape, "QUEUE_FULL")
+            return await review(batch_id, track_id, crop_bgra, crop_ref, shape, "QUEUE_FULL")
         except Exception as exc:  # noqa: BLE001 — never stop the pipeline
             logger.exception("embedding failed for track %s — REVIEW", track_id)
-            return await self._review(
+            return await review(
                 batch_id, track_id, crop_bgra, crop_ref, shape, "EMBEDDING_FAILED", detail=str(exc)
             )
 
@@ -107,7 +110,7 @@ class DedupService:
             )
         except Exception as exc:  # noqa: BLE001 — store down -> degrade to REVIEW
             logger.error("identity store search failed — REVIEW fallback: %s", exc)
-            return await self._review(
+            return await review(
                 batch_id, track_id, crop_bgra, crop_ref, shape, "STORE_UNAVAILABLE", detail=str(exc)
             )
 
@@ -128,7 +131,7 @@ class DedupService:
                 duplicate_of=top.record.id,
             )
         if sim is not None and sim >= cfg.t_low:
-            return await self._review(
+            return await review(
                 batch_id,
                 track_id,
                 crop_bgra,
@@ -153,12 +156,13 @@ class DedupService:
                 shape=shape,
                 crop_ref=crop_ref,
                 sim_score=sim,
-                require_awb=self._settings.awb.require_for_new,
+                require_awb=self._settings.awb.require_for_new or target_awb_id is not None,
+                **({"target_awb_id": target_awb_id} if target_awb_id is not None else {}),
                 **({"crop_ref_side": crop_ref_side} if crop_ref_side is not None else {}),
             )
         except Exception as exc:  # noqa: BLE001
             logger.error("failed to finalize NEW parcel: %s", exc)
-            return await self._review(
+            return await review(
                 batch_id, track_id, crop_bgra, crop_ref, shape, "STORE_UNAVAILABLE", detail=str(exc)
             )
         return Decision("NEW", record, awb=awb, top_match=top)
@@ -179,7 +183,10 @@ class DedupService:
         model_version: str | None = None,
         sim_score: float | None = None,
         duplicate_of: int | None = None,
+        selected_capture: bool = False,
     ) -> Decision:
+        if selected_capture:
+            reason = f"SELECTED_CAPTURE_{reason}"
         existing = await self._store.get_by_track(batch_id, track_id)
         if existing is not None:
             return Decision(existing.status, existing, reason=existing.review_reason)

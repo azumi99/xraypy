@@ -95,6 +95,7 @@ class PhotoSync:
             # Acknowledgments for the old VM are independent of acknowledgments for OBS.
             destination = hashlib.sha256(f"{endpoint.rstrip('/')}/{self.obs.bucket}".encode()).hexdigest()[:12]
             self.outbox += f".obs-{destination}"
+        Path(self.outbox).parent.mkdir(parents=True, exist_ok=True)
         with self._db() as db:
             db.execute("""CREATE TABLE IF NOT EXISTS photo_outbox (
                 site TEXT NOT NULL, ref TEXT NOT NULL, sha256 TEXT NOT NULL,
@@ -192,7 +193,7 @@ class PhotoSync:
         keys = self._listed_obs_keys(site) if self.obs is not None and unregistered else set()
         for ref, parts in unregistered.items():
             if object_key(site, parts) in keys:
-                result[ref] = "synced"
+                result[ref] = "available"
                 continue
             try:
                 data = self._read(site, ref)

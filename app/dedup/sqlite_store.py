@@ -688,12 +688,12 @@ class SqliteStore(IdentityStore):
         return int(row["nxt"])
 
     def _pair_next_awb_sync(
-        self, conn: sqlite3.Connection, parcel_id: int, batch_id: str
+        self, conn: sqlite3.Connection, parcel_id: int, batch_id: str, target_awb_id: int | None = None
     ) -> AwbRecord | None:
         row = conn.execute(
             "SELECT id FROM awb WHERE status='WAITING' AND (batch_id IS NULL OR batch_id=?)"
-            " ORDER BY created_at, id LIMIT 1",
-            (batch_id,),
+            " AND (? IS NULL OR id=?) ORDER BY created_at, id LIMIT 1",
+            (batch_id, target_awb_id, target_awb_id),
         ).fetchone()
         if row is None:
             return None
@@ -763,8 +763,8 @@ class SqliteStore(IdentityStore):
                         kw["embedding"].astype(np.float32).tobytes(),
                     ),
                 )
-                awb = self._pair_next_awb_sync(conn, identity_id, kw["batch_id"])
-                if kw["require_awb"] and awb is None:
+                awb = self._pair_next_awb_sync(conn, identity_id, kw["batch_id"], kw.get("target_awb_id"))
+                if (kw["require_awb"] or kw.get("target_awb_id") is not None) and awb is None:
                     raise AwbRequiredError("no WAITING AWB available for NEW parcel")
                 conn.commit()
             except sqlite3.IntegrityError as exc:
@@ -786,7 +786,7 @@ class SqliteStore(IdentityStore):
     def _promote_sync(self, identity_id: int, require_awb: bool) -> tuple[IdentityRecord, AwbRecord | None]:
         with self._lock:
             conn = self._connect()
-            row = conn.execute("SELECT batch_id FROM parcel_identity WHERE id=?", (identity_id,)).fetchone()
+            row = conn.execute("SELECT batch_id, review_reason FROM parcel_identity WHERE id=? AND status='REVIEW'", (identity_id,)).fetchone()
             if row is None:
                 raise KeyError(f"identity {identity_id} not found")
             idx = self._next_idx_sync(conn, row["batch_id"])
@@ -794,8 +794,9 @@ class SqliteStore(IdentityStore):
                 "UPDATE parcel_identity SET status='NEW', idx=?, review_reason=NULL WHERE id=?",
                 (idx, identity_id),
             )
-            awb = self._pair_next_awb_sync(conn, identity_id, row["batch_id"])
-            if require_awb and awb is None:
+            guarded = (row["review_reason"] or "").startswith("SELECTED_CAPTURE_")
+            awb = None if guarded else self._pair_next_awb_sync(conn, identity_id, row["batch_id"])
+            if require_awb and awb is None and not guarded:
                 conn.rollback()
                 raise AwbRequiredError("no WAITING AWB available for promoted parcel")
             conn.execute(

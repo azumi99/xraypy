@@ -72,7 +72,15 @@ async def deliver_photo(request: Request, ref: str):
         try:
             data = await asyncio.wait_for(_remote(sync, site, ref), timeout=15)
         except TimeoutError:
-            raise HTTPException(503, "Photo source unavailable") from None
+            remote_error = HTTPException(503, "Photo source unavailable")
+        except HTTPException as error:
+            remote_error = error
+        else:
+            return _image_response(data)
+        try:
+            data = await asyncio.to_thread(read_photo, request.app.state.settings.crop_dir, site, ref)
+        except (OSError, ValueError):
+            raise remote_error from None
         return _image_response(data)
     if _WINDOWS:
         # Windows: local-first with resolve-based path guard; remote fallback

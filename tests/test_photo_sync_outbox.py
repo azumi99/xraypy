@@ -56,13 +56,13 @@ def test_unregistered_photo_status_uses_paginated_obs_listing(settings):
     sync.obs = obs
     refs = ["batch/x.png", "label-photos/abc.jpg", "batch/missing.png"]
     assert sync.status("bgd", refs) == {
-        "batch/x.png": "synced",
-        "label-photos/abc.jpg": "synced",
+        "batch/x.png": "available",
+        "label-photos/abc.jpg": "available",
         "batch/missing.png": "unknown",
     }
-    assert sync.status("bgd", ["label-photos/abc.jpg"]) == {"label-photos/abc.jpg": "synced"}
+    assert sync.status("bgd", ["label-photos/abc.jpg"]) == {"label-photos/abc.jpg": "available"}
     assert calls == [("bgd/", None), ("bgd/", "bgd/crops/batch/x.png")]
-    assert sync.status("cas", ["cas/label-photos/abc.jpg"]) == {"cas/label-photos/abc.jpg": "synced"}
+    assert sync.status("cas", ["cas/label-photos/abc.jpg"]) == {"cas/label-photos/abc.jpg": "available"}
     assert calls[-2:] == [("cas/", None), ("cas/", "cas/crops/batch/x.png")]
 
 

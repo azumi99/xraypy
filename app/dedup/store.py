@@ -181,8 +181,9 @@ class IdentityStore(ABC):
         sim_score: float | None,
         require_awb: bool,
         crop_ref_side: str | None = None,
+        target_awb_id: int | None = None,
     ) -> tuple[IdentityRecord, AwbRecord | None]:
-        """Atomically: lock batch -> next idx -> insert NEW -> pair next WAITING AWB."""
+        """Insert NEW and pair the selected AWB, or the next waiting AWB in FIFO mode."""
 
     @abstractmethod
     async def promote_to_new(

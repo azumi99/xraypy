@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import api, { post } from "../api";
 import SourceSelect from "./SourceSelect";
+import CaptureSelection from "./CaptureSelection";
 import { shouldRefreshAwbs } from "../awbEvents";
 
 export default function LiveTab({ warehouse, frames, session, onSessionChange, onEvent, connected, waitingEventsAvailable, visible }) {
@@ -134,7 +135,9 @@ export default function LiveTab({ warehouse, frames, session, onSessionChange, o
           <div><span className="awb-eyebrow">ANTREAN X-RAY</span><h3 id="live-queue-title">Daftar Scan</h3></div>
           <span className="awb-total">{waiting.length} waiting</span>
         </div>
-        <p className="muted text-xs mt-2 mb-4">AWB diproses sesuai urutan antrean.</p>
+        {session?.mode === "track" ? (
+          session.running && <CaptureSelection key={session.batch_id} waiting={waiting} onSaved={() => scheduleWaitingRefresh(0)} />
+        ) : <p className="muted text-xs mt-2 mb-4">AWB diproses sesuai urutan antrean.</p>}
         {waitingError && <p role="alert" className="source-error mb-3">Antrean AWB gagal dimuat. Data mungkin belum terbaru.</p>}
         <ol className="scan-list" aria-label="Antrean AWB menunggu scan">
           {waiting.map((awb, index) => (

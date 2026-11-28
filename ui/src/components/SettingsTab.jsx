@@ -90,7 +90,8 @@ export default function SettingsTab({ warehouse }) {
   const warehouseSync = sync?.items?.[warehouse];
   const database = status?.database;
   const syncMetrics = warehouseSync ? [
-    ["Tersinkron", warehouseSync.synced, "good"],
+    ["Tersinkron dan terverifikasi", warehouseSync.synced, "good"],
+    ["Tersedia di OBS", warehouseSync.available ?? 0, "neutral"],
     ["Menunggu", warehouseSync.pending, "warn"],
     ["Gagal", warehouseSync.failed, "bad"],
     ["Belum terdaftar", warehouseSync.unknown, "neutral"],
@@ -138,7 +139,7 @@ export default function SettingsTab({ warehouse }) {
           <>
             <div className="settings-sync-summary">
               <div><strong>{photoTotal.toLocaleString("id-ID")}</strong> <span>foto terdata</span></div>
-              {photoTotal > 0 && <span>{Math.round(100 * warehouseSync.synced / photoTotal)}% tersinkron</span>}
+              {photoTotal > 0 && <span>{Math.round(100 * (warehouseSync.synced + (warehouseSync.available ?? 0)) / photoTotal)}% tersedia</span>}
             </div>
             {photoTotal > 0 && <div className="settings-sync-bar" aria-hidden="true">
               {syncMetrics.map(([label, count, tone]) => (

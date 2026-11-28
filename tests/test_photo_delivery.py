@@ -14,7 +14,7 @@ from tests.test_photo_receiver import Store, image
 
 
 @pytest.mark.parametrize("windows", [False, True])
-def test_obs_delivery_uses_only_obs_even_with_a_local_copy(tmp_path, monkeypatch, windows):
+def test_obs_delivery_prefers_obs_and_falls_back_to_a_local_copy(tmp_path, monkeypatch, windows):
     monkeypatch.setattr("app.photo_delivery._WINDOWS", windows)
     app = FastAPI()
     app.include_router(router)
@@ -30,7 +30,9 @@ def test_obs_delivery_uses_only_obs_even_with_a_local_copy(tmp_path, monkeypatch
 
     app.state.photo_sync = SimpleNamespace(enabled=False, obs=SimpleNamespace(read=read))
     (tmp_path / "batch").mkdir()
-    (tmp_path / "batch/a.png").write_bytes(image("red"))
+    local_photo = tmp_path / "batch/a.png"
+    local_image = image("red")
+    local_photo.write_bytes(local_image)
     jwt, _ = issue_session(app.state.settings, {"email": "x", "access": "bgd"})
     with TestClient(app) as client:
         client.cookies.set("cv_session", jwt)
@@ -39,6 +41,8 @@ def test_obs_delivery_uses_only_obs_even_with_a_local_copy(tmp_path, monkeypatch
         assert response.status_code == 200
         assert response.content == remote_image
         objects.clear()
+        assert client.get(url).content == local_image
+        local_photo.unlink()
         assert client.get(url).status_code == 404
 
 
