@@ -180,7 +180,7 @@ class PhotoSync:
         if site not in self.tokens:
             raise ValueError("invalid site")
         result = {}
-        unregistered = {}
+        unchecked = {}
         with self._db() as db:
             for ref in refs:
                 parts = self._parts(site, ref)
@@ -188,12 +188,14 @@ class PhotoSync:
                                  (site, ref)).fetchone()
                 if row:
                     result[ref] = row[0]
-                else:
-                    unregistered[ref] = parts
-        keys = self._listed_obs_keys(site) if self.obs is not None and unregistered else set()
-        for ref, parts in unregistered.items():
+                if row is None or row[0] != "synced":
+                    unchecked[ref] = parts
+        keys = self._listed_obs_keys(site) if self.obs is not None and unchecked else set()
+        for ref, parts in unchecked.items():
             if object_key(site, parts) in keys:
-                result[ref] = "available"
+                result[ref] = "synced"
+                continue
+            if ref in result:
                 continue
             try:
                 data = self._read(site, ref)

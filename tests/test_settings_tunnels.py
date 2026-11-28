@@ -107,7 +107,7 @@ async def test_sync_monitoring_only_reads_authenticated_warehouse(warehouse):
 
     assert response.json() == {
         "enabled": True,
-        "items": {warehouse: {"synced": 1, "available": 0, "pending": 0, "failed": 0, "unknown": 0, "total": 1}},
+        "items": {warehouse: {"synced": 1, "pending": 0, "failed": 0, "unknown": 0, "total": 1}},
     }
     assert reads == [warehouse]
     sync.status.assert_called_once_with(warehouse, [f"{warehouse}-photo.png"])

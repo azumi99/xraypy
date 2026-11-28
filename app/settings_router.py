@@ -63,7 +63,7 @@ async def sync_monitoring(request: Request, _: None = Depends(require_operator))
     site = current_warehouse()
     refs = await request.app.state.store.list_photo_references()
     statuses = await asyncio.to_thread(sync.status, site, refs)
-    summary = {"synced": 0, "available": 0, "pending": 0, "failed": 0, "unknown": 0, "total": len(refs)}
+    summary = {"synced": 0, "pending": 0, "failed": 0, "unknown": 0, "total": len(refs)}
     for value in statuses.values():
         summary[value] = summary.get(value, 0) + 1
     result["items"][site] = summary

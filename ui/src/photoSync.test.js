@@ -13,8 +13,8 @@ test("uses local photos first and reports unavailable sync honestly", () => {
   strictEqual(photoPath("../unsafe.png"), "/api/sync/photo?ref=..%2Funsafe.png");
   strictEqual(photoSyncLabel(false, {}, "x"), "Sinkronisasi belum aktif");
   strictEqual(photoSyncLabel(null, {}, "x"), "Status sinkronisasi tidak tersedia");
-  strictEqual(photoSyncLabel(true, { x: "synced" }, "x"), "Tersinkron dan terverifikasi");
-  strictEqual(photoSyncLabel(true, { x: "available" }, "x"), "Tersedia di OBS");
+  strictEqual(photoSyncLabel(true, { x: "synced" }, "x"), "Tersinkron");
+  strictEqual(photoSyncLabel(true, { x: "available" }, "x"), "Tersinkron");
   strictEqual(photoSyncLabel(true, { x: "stored" }, "x"), "Tersedia di server");
   strictEqual(photoSyncLabel(true, { x: "missing" }, "x"), "Belum tersedia di server");
 });

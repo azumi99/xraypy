@@ -35,7 +35,7 @@ async def run_until(sync, predicate):
             await task
 
 
-def test_unregistered_photo_status_uses_paginated_obs_listing(settings):
+def test_photo_status_uses_paginated_obs_listing_without_changing_outbox(settings):
     sync = PhotoSync(settings)
     obs = ObsPhotoStore.__new__(ObsPhotoStore)
     obs.bucket = "test-bucket"
@@ -52,17 +52,21 @@ def test_unregistered_photo_status_uses_paginated_obs_listing(settings):
             body = SimpleNamespace(contents=[SimpleNamespace(key=key)], is_truncated=False)
         return SimpleNamespace(status=200, body=body)
 
+    (settings.crop_dir / "batch/x.png").write_bytes(b"pending photo")
+    sync.enqueue("bgd", "batch/x.png")
     obs.client = SimpleNamespace(listObjects=list_objects)
     sync.obs = obs
     refs = ["batch/x.png", "label-photos/abc.jpg", "batch/missing.png"]
     assert sync.status("bgd", refs) == {
-        "batch/x.png": "available",
-        "label-photos/abc.jpg": "available",
+        "batch/x.png": "synced",
+        "label-photos/abc.jpg": "synced",
         "batch/missing.png": "unknown",
     }
-    assert sync.status("bgd", ["label-photos/abc.jpg"]) == {"label-photos/abc.jpg": "available"}
+    assert sync.status("bgd", ["label-photos/abc.jpg"]) == {"label-photos/abc.jpg": "synced"}
+    with sync._db() as db:
+        assert db.execute("SELECT status FROM photo_outbox WHERE ref='batch/x.png'").fetchone() == ("pending",)
     assert calls == [("bgd/", None), ("bgd/", "bgd/crops/batch/x.png")]
-    assert sync.status("cas", ["cas/label-photos/abc.jpg"]) == {"cas/label-photos/abc.jpg": "available"}
+    assert sync.status("cas", ["cas/label-photos/abc.jpg"]) == {"cas/label-photos/abc.jpg": "synced"}
     assert calls[-2:] == [("cas/", None), ("cas/", "cas/crops/batch/x.png")]
 
 
