@@ -701,7 +701,9 @@ class Pipeline:
         for tid in list(self.overlays):
             if tid not in seen:
                 del self.overlays[tid]
-        self._annotate_track(top, delta=delta)
+        annotated_top = full_top.copy()
+        annotated_top[top_y0:top_y1] = self._annotate_track(top, delta=delta)
+        self._annotated = annotated_top
         # The side view has its own tracker and coordinate system.
         if side is not None:
             await self._process_side_track_frame(side, captured_at, batch_id)
@@ -1094,8 +1096,6 @@ class Pipeline:
                 elif ov.status == "review":
                     label += " REVIEW"
             self._label_chip(annotated, label, x1, y1, color)
-        if overlays is None:
-            self._annotated = annotated
         return annotated
 
     @staticmethod

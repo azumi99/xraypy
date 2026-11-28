@@ -1,0 +1,1 @@
+GRANT SELECT, INSERT, UPDATE ON TABLE cv.clearance_type TO PUBLIC;

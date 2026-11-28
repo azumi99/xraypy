@@ -103,6 +103,19 @@ class PgVectorStore(IdentityStore):
         rows = await self._run(query, *args)
         return rows[0] if rows else None
 
+    async def get_xray_device(self, warehouse: str) -> str | None:
+        row = await self._runrow(
+            "SELECT config::text FROM cv.xray_device WHERE warehouse=$1", warehouse,
+        )
+        return row[0] if row else None
+
+    async def save_xray_device(self, warehouse: str, config: str, *, overwrite: bool = True) -> None:
+        await self._run(
+            """INSERT INTO cv.xray_device (warehouse, config) VALUES ($1, $2::jsonb)
+               ON CONFLICT (warehouse) DO UPDATE SET config=excluded.config WHERE $3""",
+            warehouse, config, overwrite,
+        )
+
     async def list_clearance_types(self):
         return [dict(row) for row in await self._run(
             "SELECT mawb, hawb, clearance_type FROM cv.clearance_type WHERE warehouse=$1 ORDER BY mawb, hawb",

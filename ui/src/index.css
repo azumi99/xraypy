@@ -468,6 +468,7 @@
 
 @layer components {
   .settings-page { display: grid; gap: 18px; max-width: 1120px; }
+  .settings-xray-data { display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 12px 20px; }
   .settings-heading, .settings-panel-heading, .settings-sync-summary { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
   .settings-heading { align-items: end; padding: 4px 0; }
   .settings-heading p, .settings-panel p, .settings-refresh, .settings-sync-summary span { color: var(--text-muted); font-size: 12px; }

@@ -24,7 +24,7 @@ from .db_tunnel import db_tunnel
 from .dedup.pg_store import PgVectorStore
 from .dedup.review import router as review_router
 from .dedup.service import DedupService
-from .dedup.store import IdentityStore, make_store
+from .dedup.store import IdentityStore, import_legacy_xray_devices, make_store
 from .embedding.registry import create_embedder
 from .embedding.worker import EmbeddingWorker
 from .events import EventBus
@@ -78,6 +78,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # 2. identity store
         store: IdentityStore = make_store(settings)
         await store.initialize()
+        await import_legacy_xray_devices(store, settings.xray_machine_dir)
         auth_store = AuthStore(settings, store)
         await auth_store.initialize()
         app.state.auth_store = auth_store

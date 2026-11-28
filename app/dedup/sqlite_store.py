@@ -116,6 +116,10 @@ CREATE TABLE IF NOT EXISTS clearance_type (
     mawb TEXT NOT NULL, hawb TEXT NOT NULL, clearance_type TEXT NOT NULL,
     PRIMARY KEY (warehouse, mawb, hawb)
 );
+CREATE TABLE IF NOT EXISTS xray_device (
+    warehouse TEXT NOT NULL PRIMARY KEY CHECK (warehouse IN ('cas', 'bgd')),
+    config TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS label_print (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     mawb TEXT NOT NULL, pcs_mawb INTEGER, hawb TEXT NOT NULL, pcs_hawb INTEGER,
@@ -340,6 +344,27 @@ class SqliteStore(IdentityStore):
                 ).fetchall()
                 return {row["ref"] for row in rows}
         return await asyncio.to_thread(run)
+
+    async def get_xray_device(self, warehouse: str) -> str | None:
+        def run():
+            with self._lock:
+                row = self._connect().execute(
+                    "SELECT config FROM xray_device WHERE warehouse=?", (warehouse,),
+                ).fetchone()
+                return row[0] if row else None
+
+        return await asyncio.to_thread(run)
+
+    async def save_xray_device(self, warehouse: str, config: str, *, overwrite: bool = True) -> None:
+        def run():
+            with self._lock, self._connect() as conn:
+                conn.execute(
+                    """INSERT INTO xray_device (warehouse, config) VALUES (?, ?)
+                       ON CONFLICT (warehouse) DO UPDATE SET config=excluded.config WHERE ?""",
+                    (warehouse, config, overwrite),
+                )
+
+        await asyncio.to_thread(run)
 
     async def list_clearance_types(self):
         def run():

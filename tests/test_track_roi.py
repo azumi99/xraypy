@@ -38,16 +38,16 @@ def test_track_roi_detection_display_and_capture(view, start, end):
         expected = frame[start:end]
         assert all(np.array_equal(image, expected) for image in inputs)
         annotated = pipeline._annotated if view == "top" else pipeline._annotated_side
-        assert annotated.shape == (expected.shape if view == "top" else frame.shape)
-        annotated_roi = annotated if view == "top" else annotated[start:end]
+        assert annotated.shape == frame.shape
+        np.testing.assert_array_equal(annotated[:start], frame[:start])
+        np.testing.assert_array_equal(annotated[end:], frame[end:])
+        annotated_roi = annotated[start:end]
         assert not np.array_equal(annotated_roi[0:25, 20:81], expected[0:25, 20:81])
         if view == "top":
             bbox, capture_frame = captured[0]
             assert bbox == (20, start + 2, 80, start + 20)
             np.testing.assert_array_equal(capture_frame, frame)
         else:
-            assert np.array_equal(annotated[:start], frame[:start])
-            assert np.array_equal(annotated[end:], frame[end:])
             patch = pipeline._pending_side[0]["side"]
             assert np.array_equal(patch, expected[0:24, 11:90])
 
@@ -162,10 +162,9 @@ def test_reference_preview_highlights_weak_bridge_without_changing_capture(view,
     pipeline._detector = pipeline._side_detector = SimpleNamespace(process=detect)
     asyncio.run(pipeline._process_track_frame({view: frame}))
     preview = pipeline._annotated if view == "top" else pipeline._annotated_side
-    y = row - 3 if view == "top" else row
-    assert preview[y, 120, 0] < preview[y, 120, 1]  # weak yellow bridge
-    assert preview[y, 90, 0] > preview[y, 90, 1]  # strong magenta seed
-    np.testing.assert_array_equal(preview[y, 170], original[row, 170])
+    assert preview[row, 120, 0] < preview[row, 120, 1]  # weak yellow bridge
+    assert preview[row, 90, 0] > preview[row, 90, 1]  # strong magenta seed
+    np.testing.assert_array_equal(preview[row, 170], original[row, 170])
     np.testing.assert_array_equal(frame, original)
     assert not pipeline._pending_top and not pipeline._pending_side
 

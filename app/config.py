@@ -9,7 +9,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic.alias_generators import to_camel
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 EmbeddingModelName = Literal["resnet18", "resnet50", "dinov2_small", "dinov2_base"]
@@ -180,6 +181,22 @@ class PhotoSyncConfig(BaseModel):
 
 
 
+class XrayMachineConfig(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="forbid", allow_inf_nan=False)
+
+    flag_gambar_rpm: bool = True
+    flag_rpm_alarm: bool = False
+    kode_cara_angkut: int = Field(1, ge=0)
+    entry_lane: str = Field("1", min_length=1, max_length=128)
+    entry_speed: float = Field(12.5, ge=0)
+    entry_id_image: str = Field("101", min_length=1, max_length=128)
+    entry_sn_image: str = Field("SN-XRAY-001", min_length=1, max_length=128)
+    gross_weight: float = Field(15000.5, ge=0)
+    weight_xray: float = Field(14950.2, ge=0)
+    entry_gate: str = Field("GATE-A1", min_length=1, max_length=128)
+    entry_speed_view: str = Field("12.5 km/h", min_length=1, max_length=128)
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="CV_",
@@ -232,6 +249,8 @@ class Settings(BaseSettings):
     track_roi: TrackRoiConfig = Field(default_factory=TrackRoiConfig)
     detector: DetectorConfig = Field(default_factory=DetectorConfig)
     awb: AwbConfig = Field(default_factory=AwbConfig)
+    xray_machine_dir: Path = Path("data/xray-machine")
+    xray_machine: XrayMachineConfig = Field(default_factory=XrayMachineConfig)
 
 
 def load_settings() -> Settings:

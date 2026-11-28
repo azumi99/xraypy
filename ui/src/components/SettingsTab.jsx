@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import XrayMachineSettings from "./XrayMachineSettings";
 
 const labels = {
   connecting: "Menghubungkan",
@@ -103,6 +104,7 @@ export default function SettingsTab({ warehouse }) {
         <span className="settings-refresh">Diperbarui setiap 5 detik</span>
       </header>
       {error && <p role="alert" className="dashboard-error">{error}</p>}
+      <XrayMachineSettings key={warehouse} />
       <div className="settings-connections">
         <section className="dashboard-panel settings-panel" aria-labelledby="manifest-tunnel-title">
           <header className="settings-panel-heading">

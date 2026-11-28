@@ -12,6 +12,7 @@ keep idx NULL and never consume a number.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
@@ -21,11 +22,28 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
+from pydantic import ValidationError
 
-from ..config import DedupConfig, Settings
+from ..config import DedupConfig, Settings, XrayMachineConfig
 from .shape_filter import ShapeFeatures, candidates_match
 
 logger = logging.getLogger(__name__)
+
+
+async def import_legacy_xray_devices(store: IdentityStore, directory: Path) -> None:
+    for warehouse in ("cas", "bgd"):
+        if await store.get_xray_device(warehouse) is not None:
+            continue
+        try:
+            data = await asyncio.to_thread((directory / f"{warehouse}.json").read_bytes)
+            config = XrayMachineConfig.model_validate_json(data)
+        except FileNotFoundError:
+            continue
+        except (OSError, ValidationError):
+            logger.warning("Could not import local X-ray device settings for %s", warehouse)
+            continue
+        await store.save_xray_device(warehouse, config.model_dump_json(by_alias=True), overwrite=False)
+
 
 ACTIONS_REVIEW = "NOT_DUPLICATE", "CONFIRM_DUPLICATE", "RESCAN_INTENTIONAL"
 
@@ -82,6 +100,12 @@ class IdentityStore(ABC):
 
     @abstractmethod
     async def close(self) -> None: ...
+
+    @abstractmethod
+    async def get_xray_device(self, warehouse: str) -> str | None: ...
+
+    @abstractmethod
+    async def save_xray_device(self, warehouse: str, config: str, *, overwrite: bool = True) -> None: ...
 
     # -- parcels ----------------------------------------------------------
     @abstractmethod
